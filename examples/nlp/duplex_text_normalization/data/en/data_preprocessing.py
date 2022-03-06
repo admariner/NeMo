@@ -44,6 +44,7 @@ After this script, you can use upsample.py to create a more class balanced train
 """
 
 
+
 import os
 from argparse import ArgumentParser
 
@@ -63,7 +64,7 @@ from nemo.utils import logging
 engine = inflect.engine()
 
 # these are all words that can appear in a verbalized number, this list will be used later as a filter to detect numbers in verbalizations
-number_verbalizations = list(range(0, 20)) + list(range(20, 100, 10))
+number_verbalizations = list(range(20)) + list(range(20, 100, 10))
 number_verbalizations = (
     [engine.number_to_words(x, zero="zero").replace("-", " ").replace(",", "") for x in number_verbalizations]
     + ["hundred", "thousand", "million", "billion", "trillion"]

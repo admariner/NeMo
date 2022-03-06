@@ -131,8 +131,7 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
         Returns:
             A decoded string.
         """
-        hypothesis = self.tokenizer.ids_to_text(tokens)
-        return hypothesis
+        return self.tokenizer.ids_to_text(tokens)
 
     def decode_ids_to_tokens(self, tokens: List[int]) -> List[str]:
         """
@@ -145,8 +144,7 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
         Returns:
             A list of decoded tokens.
         """
-        token_list = self.tokenizer.ids_to_tokens(tokens)
-        return token_list
+        return self.tokenizer.ids_to_tokens(tokens)
 
 
 class RNNTBPEWER(Metric):
@@ -228,7 +226,7 @@ class RNNTBPEWER(Metric):
             hypotheses, _ = self.decoding.rnnt_decoder_predictions_tensor(encoder_output, encoded_lengths)
 
         if self.log_prediction:
-            logging.info(f"\n")
+            logging.info("\\n")
             logging.info(f"reference :{references[0]}")
             logging.info(f"predicted :{hypotheses[0]}")
 

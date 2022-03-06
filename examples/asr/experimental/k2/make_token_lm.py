@@ -100,7 +100,7 @@ def main():
                     text = text.lower()
                 tok_text = " ".join([str(i + offset) for i in tokenizer.text_to_ids(text)])
                 if is_chain_builder:
-                    tok_text = f"line_{num_lines} " + tok_text
+                    tok_text = f"line_{num_lines} {tok_text}"
                 tok_text_list.append(tok_text)
                 num_lines += 1
 

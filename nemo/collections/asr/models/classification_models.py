@@ -146,8 +146,7 @@ class _EncDecBaseModel(ASRModel, ExportableEncDecModel):
         if self.spec_augmentation is not None and self.training:
             processed_signal = self.spec_augmentation(input_spec=processed_signal, length=processed_signal_len)
         encoded, encoded_len = self.encoder(audio_signal=processed_signal, length=processed_signal_len)
-        logits = self.decoder(encoder_output=encoded)
-        return logits
+        return self.decoder(encoder_output=encoded)
 
     def setup_training_data(self, train_data_config: Optional[Union[DictConfig, Dict]]):
         if 'shuffle' not in train_data_config:
@@ -160,15 +159,15 @@ class _EncDecBaseModel(ASRModel, ExportableEncDecModel):
         # Need to set this because if using an IterableDataset, the length of the dataloader is the total number
         # of samples rather than the number of batches, and this messes up the tqdm progress bar.
         # So we set the number of steps manually (to the correct number) to fix this.
-        if 'is_tarred' in train_data_config and train_data_config['is_tarred']:
-            # We also need to check if limit_train_batches is already set.
-            # If it's an int, we assume that the user has set it to something sane, i.e. <= # training batches,
-            # and don't change it. Otherwise, adjust batches accordingly if it's a float (including 1.0).
-            if isinstance(self._trainer.limit_train_batches, float):
-                self._trainer.limit_train_batches = int(
-                    self._trainer.limit_train_batches
-                    * ceil((len(self._train_dl.dataset) / self.world_size) / train_data_config['batch_size'])
-                )
+        if (
+            'is_tarred' in train_data_config
+            and train_data_config['is_tarred']
+            and isinstance(self._trainer.limit_train_batches, float)
+        ):
+            self._trainer.limit_train_batches = int(
+                self._trainer.limit_train_batches
+                * ceil((len(self._train_dl.dataset) / self.world_size) / train_data_config['batch_size'])
+            )
 
     def setup_validation_data(self, val_data_config: Optional[Union[DictConfig, Dict]]):
         if 'shuffle' not in val_data_config:
@@ -280,7 +279,7 @@ class _EncDecBaseModel(ASRModel, ExportableEncDecModel):
 
             A list of transcriptions (or raw log probabilities if logprobs is True) in the same order as paths2audio_files
         """
-        if paths2audio_files is None or len(paths2audio_files) == 0:
+        if paths2audio_files is None or not paths2audio_files:
             return []
         # We will store transcriptions here
         labels = []
@@ -369,8 +368,7 @@ class _EncDecBaseModel(ASRModel, ExportableEncDecModel):
             'shuffle': False,
         }
 
-        temporary_datalayer = self._setup_dataloader_from_config(config=DictConfig(dl_config))
-        return temporary_datalayer
+        return self._setup_dataloader_from_config(config=DictConfig(dl_config))
 
     @abstractmethod
     def _update_decoder_config(self, labels, cfg):
@@ -383,7 +381,10 @@ class EncDecClassificationModel(_EncDecBaseModel):
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
 
         if cfg.get("is_regression_task", False):
-            raise ValueError(f"EndDecClassificationModel requires the flag is_regression_task to be set as false")
+            raise ValueError(
+                "EndDecClassificationModel requires the flag is_regression_task to be set as false"
+            )
+
 
         super().__init__(cfg=cfg, trainer=trainer)
 
@@ -410,15 +411,12 @@ class EncDecClassificationModel(_EncDecBaseModel):
         Returns:
             List of available pre-trained models.
         """
-        results = []
-
         model = PretrainedModelInfo(
             pretrained_model_name="vad_telephony_marblenet",
             description="For details about this model, please visit https://ngc.nvidia.com/catalog/models/nvidia:nemo:vad_telephony_marblenet",
             location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/vad_telephony_marblenet/versions/1.0.0rc1/files/vad_telephony_marblenet.nemo",
         )
-        results.append(model)
-
+        results = [model]
         model = PretrainedModelInfo(
             pretrained_model_name="vad_marblenet",
             description="For details about this model, please visit https://ngc.nvidia.com/catalog/models/nvidia:nemo:vad_marblenet",
@@ -554,8 +552,9 @@ class EncDecClassificationModel(_EncDecBaseModel):
 
     @typecheck()
     def forward(self, input_signal, input_signal_length):
-        logits = super().forward(input_signal=input_signal, input_signal_length=input_signal_length)
-        return logits
+        return super().forward(
+            input_signal=input_signal, input_signal_length=input_signal_length
+        )
 
     def change_labels(self, new_labels: List[str]):
         """
@@ -639,13 +638,14 @@ class EncDecRegressionModel(_EncDecBaseModel):
         Returns:
             List of available pre-trained models.
         """
-        result = []
-
-        return result
+        return []
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         if not cfg.get('is_regression_task', False):
-            raise ValueError(f"EndDecRegressionModel requires the flag is_regression_task to be set as true")
+            raise ValueError(
+                "EndDecRegressionModel requires the flag is_regression_task to be set as true"
+            )
+
         super().__init__(cfg=cfg, trainer=trainer)
 
     def _setup_preprocessor(self):

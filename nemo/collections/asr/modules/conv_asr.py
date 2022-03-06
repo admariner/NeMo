@@ -126,7 +126,7 @@ class ConvASREncoder(NeuralModule, Exportable):
         if hasattr(activation, 'inplace'):
             activation.inplace = True
 
-        feat_in = feat_in * frame_splicing
+        feat_in *= frame_splicing
 
         self._feat_in = feat_in
 
@@ -309,7 +309,7 @@ class ParallelConvASREncoder(NeuralModule, Exportable):
             jasper = OmegaConf.to_container(jasper)
 
         activation = jasper_activations[activation]()
-        feat_in = feat_in * frame_splicing
+        feat_in *= frame_splicing
 
         self._feat_in = feat_in
 
@@ -336,10 +336,7 @@ class ParallelConvASREncoder(NeuralModule, Exportable):
             block_dropout = lcfg.get('block_dropout', 0.0)
             parallel_residual_mode = lcfg.get('parallel_residual_mode', 'sum')
 
-            parallel_blocks = []
-            for kernel_size in lcfg['kernel']:
-                parallel_blocks.append(
-                    JasperBlock(
+            parallel_blocks = [JasperBlock(
                         feat_in,
                         lcfg['filters'],
                         repeat=lcfg['repeat'],
@@ -364,8 +361,7 @@ class ParallelConvASREncoder(NeuralModule, Exportable):
                         kernel_size_factor=kernel_size_factor,
                         stride_last=stride_last,
                         quantize=quantize,
-                    )
-                )
+                    ) for kernel_size in lcfg['kernel']]
             if len(parallel_blocks) == 1:
                 encoder_layers.append(parallel_blocks[0])
             else:
@@ -417,8 +413,9 @@ class ConvASRDecoder(NeuralModule, Exportable):
 
         if vocabulary is None and num_classes < 0:
             raise ValueError(
-                f"Neither of the vocabulary and num_classes are set! At least one of them need to be set."
+                "Neither of the vocabulary and num_classes are set! At least one of them need to be set."
             )
+
 
         if num_classes <= 0:
             num_classes = len(vocabulary)
@@ -507,7 +504,7 @@ class ConvASRDecoderReconstruction(NeuralModule, Exportable):
         self.feat_hidden = feat_hidden
 
         self.decoder_layers = [nn.Conv1d(self.feat_in, self.feat_hidden, kernel_size=1, bias=True)]
-        for i in range(stride_layers):
+        for _ in range(stride_layers):
             self.decoder_layers.append(activation)
             if stride_transpose:
                 self.decoder_layers.append(
@@ -536,7 +533,7 @@ class ConvASRDecoderReconstruction(NeuralModule, Exportable):
                 )
             self.decoder_layers.append(nn.Conv1d(self.feat_hidden, self.feat_hidden, kernel_size=1, bias=True))
             self.decoder_layers.append(nn.BatchNorm1d(self.feat_hidden, eps=1e-3, momentum=0.1))
-        for i in range(non_stride_layers):
+        for _ in range(non_stride_layers):
             self.decoder_layers.append(activation)
             self.decoder_layers.append(
                 nn.Conv1d(
@@ -787,12 +784,12 @@ class SpeakerDecoder(NeuralModule, Exportable):
         super().__init__()
         self.angular = angular
         self.emb_id = 2
-        bias = False if self.angular else True
+        bias = not self.angular
         emb_sizes = [emb_sizes] if type(emb_sizes) is int else emb_sizes
 
         self._num_classes = num_classes
         self.pool_mode = pool_mode.lower()
-        if self.pool_mode == 'xvector' or self.pool_mode == 'tap':
+        if self.pool_mode in ['xvector', 'tap']:
             self._pooling = StatsPoolLayer(feat_in=feat_in, pool_mode=self.pool_mode)
             affine_type = 'linear'
         elif self.pool_mode == 'attention':
@@ -800,9 +797,7 @@ class SpeakerDecoder(NeuralModule, Exportable):
             affine_type = 'conv'
 
         shapes = [self._pooling.feat_in]
-        for size in emb_sizes:
-            shapes.append(int(size))
-
+        shapes.extend(int(size) for size in emb_sizes)
         emb_layers = []
         for shape_in, shape_out in zip(shapes[:-1], shapes[1:]):
             layer = self.affine_layer(shape_in, shape_out, learn_mean=False, affine_type=affine_type)
@@ -817,20 +812,14 @@ class SpeakerDecoder(NeuralModule, Exportable):
     def affine_layer(
         self, inp_shape, out_shape, learn_mean=True, affine_type='conv',
     ):
-        if affine_type == 'conv':
-            layer = nn.Sequential(
+        return nn.Sequential(
                 nn.BatchNorm1d(inp_shape, affine=True, track_running_stats=True),
                 nn.Conv1d(inp_shape, out_shape, kernel_size=1),
-            )
-
-        else:
-            layer = nn.Sequential(
+            ) if affine_type == 'conv' else nn.Sequential(
                 nn.Linear(inp_shape, out_shape),
                 nn.BatchNorm1d(out_shape, affine=learn_mean, track_running_stats=True),
                 nn.ReLU(),
             )
-
-        return layer
 
     @typecheck()
     def forward(self, encoder_output, length=None):

@@ -170,7 +170,7 @@ def get_args() -> argparse.Namespace:
 def load_manifest(manifest: Path) -> List[Dict[str, Union[str, float]]]:
     result = []
     with manifest.open() as f:
-        for i, line in enumerate(f):
+        for line in f:
             data = json.loads(line)
             result.append(data)
     return result
@@ -183,23 +183,17 @@ def main() -> None:
     else:
         model = PunctuationCapitalizationModel.from_pretrained(args.pretrained_name)
     if args.device is None:
-        if torch.cuda.is_available():
-            model = model.cuda()
-        else:
-            model = model.cpu()
+        model = model.cuda() if torch.cuda.is_available() else model.cpu()
     else:
         model = model.to(args.device)
+    texts = []
     if args.input_manifest is None:
-        texts = []
         with args.input_text.open() as f:
-            for line in f:
-                texts.append(line.strip())
+            texts.extend(line.strip() for line in f)
     else:
         manifest = load_manifest(args.input_manifest)
         text_key = "pred_text" if "pred_text" in manifest[0] else "text"
-        texts = []
-        for item in manifest:
-            texts.append(item[text_key])
+        texts.extend(item[text_key] for item in manifest)
     processed_texts = model.add_punctuation_capitalization(
         texts,
         batch_size=args.batch_size,

@@ -160,10 +160,7 @@ def main(cfg):
         for i in key_meta_map:
             key_meta_map[i]['rttm_filepath'] = os.path.join(table_out_dir, i + ".txt")
 
-        if not cfg.out_manifest_filepath:
-            out_manifest_filepath = "vad_out.json"
-        else:
-            out_manifest_filepath = cfg.out_manifest_filepath
+        out_manifest_filepath = cfg.out_manifest_filepath or "vad_out.json"
         out_manifest_filepath = write_rttm2manifest(key_meta_map, out_manifest_filepath)
         logging.info(f"Writing VAD output to manifest: {out_manifest_filepath}")
 

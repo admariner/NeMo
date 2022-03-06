@@ -81,9 +81,9 @@ def get_char_dataset(config: dict, augmentor: Optional['AudioAugmentor'] = None)
         An instance of AudioToCharDataset.
     """
     if 'labels' not in config:
-        logging.warning(f"dataset does not have explicitly defined labels")
+        logging.warning("dataset does not have explicitly defined labels")
 
-    dataset = audio_to_text.AudioToCharDataset(
+    return audio_to_text.AudioToCharDataset(
         manifest_filepath=config['manifest_filepath'],
         labels=config.get('labels', None),
         sample_rate=config['sample_rate'],
@@ -99,7 +99,6 @@ def get_char_dataset(config: dict, augmentor: Optional['AudioAugmentor'] = None)
         parser=config.get('parser', 'en'),
         return_sample_id=config.get('return_sample_id', False),
     )
-    return dataset
 
 
 def get_bpe_dataset(
@@ -116,7 +115,7 @@ def get_bpe_dataset(
     Returns:
         An instance of AudioToBPEDataset.
     """
-    dataset = audio_to_text.AudioToBPEDataset(
+    return audio_to_text.AudioToBPEDataset(
         manifest_filepath=config['manifest_filepath'],
         tokenizer=tokenizer,
         sample_rate=config['sample_rate'],
@@ -129,7 +128,6 @@ def get_bpe_dataset(
         use_start_end_token=config.get('use_start_end_token', True),
         return_sample_id=config.get('return_sample_id', False),
     )
-    return dataset
 
 
 def get_tarred_dataset(
@@ -168,15 +166,12 @@ def get_tarred_dataset(
         )
 
     if 'labels' not in config:
-        logging.warning(f"dataset does not have explicitly defined labels")
+        logging.warning("dataset does not have explicitly defined labels")
 
-    for dataset_idx, (tarred_audio_filepath, manifest_filepath) in enumerate(
-        zip(tarred_audio_filepaths, manifest_filepaths)
-    ):
+    for tarred_audio_filepath, manifest_filepath in zip(tarred_audio_filepaths, manifest_filepaths):
         if len(tarred_audio_filepath) == 1:
             tarred_audio_filepath = tarred_audio_filepath[0]
-        if tokenizer is None:
-            dataset = audio_to_text.TarredAudioToCharDataset(
+        dataset = audio_to_text.TarredAudioToCharDataset(
                 audio_tar_filepaths=tarred_audio_filepath,
                 manifest_filepath=manifest_filepath,
                 labels=config.get('labels', None),
@@ -196,9 +191,7 @@ def get_tarred_dataset(
                 global_rank=global_rank,
                 world_size=world_size,
                 return_sample_id=config.get('return_sample_id', False),
-            )
-        else:
-            dataset = audio_to_text.TarredAudioToBPEDataset(
+            ) if tokenizer is None else audio_to_text.TarredAudioToBPEDataset(
                 audio_tar_filepaths=tarred_audio_filepath,
                 manifest_filepath=manifest_filepath,
                 tokenizer=tokenizer,
@@ -216,7 +209,6 @@ def get_tarred_dataset(
                 world_size=world_size,
                 return_sample_id=config.get('return_sample_id', False),
             )
-
         datasets.append(dataset)
 
     return get_chain_dataset(datasets=datasets, ds_config=config)
@@ -246,7 +238,7 @@ def get_dali_char_dataset(
         An instance of AudioToCharDALIDataset.
     """
     device = 'gpu' if torch.cuda.is_available() else 'cpu'
-    dataset = audio_to_text_dali.AudioToCharDALIDataset(
+    return audio_to_text_dali.AudioToCharDALIDataset(
         manifest_filepath=config['manifest_filepath'],
         device=device,
         batch_size=config['batch_size'],
@@ -269,7 +261,6 @@ def get_dali_char_dataset(
         preprocessor_cfg=preprocessor_cfg,
         return_sample_id=config.get('return_sample_id', False),
     )
-    return dataset
 
 
 def get_dali_bpe_dataset(
@@ -297,7 +288,7 @@ def get_dali_bpe_dataset(
         An instance of AudioToCharDALIDataset.
     """
     device = 'gpu' if torch.cuda.is_available() else 'cpu'
-    dataset = audio_to_text_dali.AudioToBPEDALIDataset(
+    return audio_to_text_dali.AudioToBPEDALIDataset(
         manifest_filepath=config['manifest_filepath'],
         tokenizer=tokenizer,
         device=device,
@@ -317,7 +308,6 @@ def get_dali_bpe_dataset(
         preprocessor_cfg=preprocessor_cfg,
         return_sample_id=config.get('return_sample_id', False),
     )
-    return dataset
 
 
 class ASRPredictionWriter(BasePredictionWriter):
@@ -338,12 +328,14 @@ class ASRPredictionWriter(BasePredictionWriter):
         dataloader_idx: int,
     ):
         for sample_id, transcribed_text in prediction:
-            item = {}
             sample = self.dataset.get_manifest_sample(sample_id)
-            item["audio_filepath"] = sample.audio_file
-            item["duration"] = sample.duration
-            item["text"] = sample.text_raw
-            item["pred_text"] = transcribed_text
+            item = {
+                "audio_filepath": sample.audio_file,
+                "duration": sample.duration,
+                "text": sample.text_raw,
+                "pred_text": transcribed_text,
+            }
+
             self.outf.write(json.dumps(item) + "\n")
             self.samples_num += 1
         return
@@ -361,7 +353,7 @@ def convert_to_config_list(initial_list):
     if not isinstance(initial_list, ListConfig):
         initial_list = ListConfig([initial_list])
 
-    for list_idx, list_val in enumerate(initial_list):
+    for list_val in initial_list:
         if type(list_val) != type(initial_list[0]):
             raise ValueError(
                 "manifest_filepaths and tarred_audio_filepaths need to be a list of lists for bucketing or just a list of strings"
@@ -413,7 +405,7 @@ def calc_bucketing_batch_sizes(ds_config, datasets_len):
         for idx in range(datasets_len):
             scale_factor = datasets_len - idx
             bucketing_batch_sizes.append(scale_factor * bucketing_batch_size)
-    elif isinstance(bucketing_batch_size, ListConfig) or isinstance(bucketing_batch_size, list):
+    elif isinstance(bucketing_batch_size, (ListConfig, list)):
         bucketing_batch_sizes = bucketing_batch_size
     else:
         raise ValueError(

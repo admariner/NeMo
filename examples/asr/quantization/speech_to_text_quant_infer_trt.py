@@ -121,9 +121,9 @@ def get_min_max_input_shape(asr_model):
         if shape[0] < min_shape[0]:
             min_shape = (shape[0], *min_shape[1:])
         if shape[2] > max_shape[2]:
-            max_shape = (*max_shape[0:2], shape[2])
+            max_shape = *max_shape[:2], shape[2]
         if shape[2] < min_shape[2]:
-            min_shape = (*min_shape[0:2], shape[2])
+            min_shape = *min_shape[:2], shape[2]
     return min_shape, max_shape
 
 
@@ -171,8 +171,7 @@ def trt_inference(stream, trt_ctx, d_input, d_output, input_signal, input_signal
     cuda.memcpy_dtoh_async(h_output, d_output, stream)
     stream.synchronize()
 
-    greedy_predictions = torch.tensor(h_output).argmax(dim=-1, keepdim=False)
-    return greedy_predictions
+    return torch.tensor(h_output).argmax(dim=-1, keepdim=False)
 
 
 def evaluate(asr_model, asr_onnx, labels_map, wer, qat):
@@ -214,7 +213,7 @@ def evaluate(asr_model, asr_onnx, labels_map, wer, qat):
             for batch_ind in range(greedy_predictions.shape[0]):
                 seq_len = test_batch[3][batch_ind].cpu().detach().numpy()
                 seq_ids = test_batch[2][batch_ind].cpu().detach().numpy()
-                reference = ''.join([labels_map[c] for c in seq_ids[0:seq_len]])
+                reference = ''.join([labels_map[c] for c in seq_ids[:seq_len]])
                 references.append(reference)
             del test_batch
         wer_value = word_error_rate(hypotheses=hypotheses, references=references, use_cer=wer.use_cer)

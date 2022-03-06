@@ -62,7 +62,7 @@ def count_occurence(manifest_file_id):
     Returns:
         count (Dict): Dict of wav files {'A' : 2, ..., 'S':10}
     """
-    count = dict()
+    count = {}
     for i in manifest_file_id:
         audio_filename = i.split("-sub")[0]
         count[audio_filename] = count.get(audio_filename, 0) + 1
@@ -78,10 +78,8 @@ def _speech_collate_fn(batch, pad_id):
                assumes the signals are 1d torch tensors (i.e. mono audio).
     """
     _, audio_lengths, _, tokens_lengths = zip(*batch)
-    max_audio_len = 0
     has_audio = audio_lengths[0] is not None
-    if has_audio:
-        max_audio_len = max(audio_lengths).item()
+    max_audio_len = max(audio_lengths).item() if has_audio else 0
     max_tokens_len = max(tokens_lengths).item()
 
     audio_signal, tokens = [], []
@@ -281,7 +279,7 @@ target_label_n, "offset": offset_in_sec_n}
         self.is_regression_task = is_regression_task
 
         if not is_regression_task:
-            self.labels = labels if labels else self.collection.uniq_labels
+            self.labels = labels or self.collection.uniq_labels
             self.num_classes = len(self.labels) if self.labels is not None else 1
             self.label2id, self.id2label = {}, {}
             for label_id, label in enumerate(self.labels):
@@ -521,7 +519,7 @@ class _TarredAudioLabelDataset(IterableDataset):
         self.featurizer = featurizer
         self.trim = trim
 
-        self.labels = labels if labels else self.collection.uniq_labels
+        self.labels = labels or self.collection.uniq_labels
         self.num_classes = len(self.labels)
 
         self.label2id, self.id2label = {}, {}
@@ -555,7 +553,10 @@ class _TarredAudioLabelDataset(IterableDataset):
                 # Brace expand
                 audio_tar_filepaths = list(braceexpand.braceexpand(audio_tar_filepaths))
 
-            if shard_strategy == 'scatter':
+            if shard_strategy == 'replicate':
+                logging.info("All tarred dataset shards will be replicated across all nodes.")
+
+            elif shard_strategy == 'scatter':
                 logging.info("All tarred dataset shards will be scattered evenly across all nodes.")
 
                 if len(audio_tar_filepaths) % world_size != 0:
@@ -570,9 +571,6 @@ class _TarredAudioLabelDataset(IterableDataset):
                 logging.info(
                     "Partitioning tarred dataset: process (%d) taking shards [%d, %d)", global_rank, begin_idx, end_idx
                 )
-
-            elif shard_strategy == 'replicate':
-                logging.info("All tarred dataset shards will be replicated across all nodes.")
 
             else:
                 raise ValueError(f"Invalid shard strategy ! Allowed values are : {valid_shard_strategies}")
@@ -634,11 +632,8 @@ class _TarredAudioLabelDataset(IterableDataset):
 
                     file_id, _ = os.path.splitext(os.path.basename(audio_filename))
                     if audio_filename in self.file_occurence:
-                        for j in range(0, self.file_occurence[file_id]):
-                            if j == 0:
-                                audio_filename = file_id
-                            else:
-                                audio_filename = file_id + "-sub" + str(j)
+                        for j in range(self.file_occurence[file_id]):
+                            audio_filename = file_id if j == 0 else f'{file_id}-sub{str(j)}'
                             yield audio_bytes, audio_filename
 
         return TarredAudioFilter(self.collection, self.file_occurence)

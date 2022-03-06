@@ -59,7 +59,7 @@ def main():
             continue
         # Check if it is a directory.
         if os.path.isdir(os.path.join(colletions_dir, sub_dir)):
-            collections[sub_dir] = "nemo.collections." + sub_dir
+            collections[sub_dir] = f"nemo.collections.{sub_dir}"
 
     output_list = []
     # Iterate over all collections.

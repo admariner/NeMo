@@ -59,10 +59,7 @@ def div_up(x: int, y: int):
 
 @cuda.jit(device=True)
 def maximum(x, y):
-    if x < y:
-        return y
-    else:
-        return x
+    return y if x < y else x
 
 
 @cuda.jit(device=True)
@@ -93,8 +90,7 @@ def log_plus(p1: float, p2: float):
     if p2 == global_constants.FP32_NEG_INF:
         return p1
 
-    result = math.log1p(math.exp(-math.fabs(p1 - p2))) + maximum(p1, p2)
-    return result
+    return math.log1p(math.exp(-math.fabs(p1 - p2))) + maximum(p1, p2)
 
 
 @cuda.jit(device=True, inline=True)

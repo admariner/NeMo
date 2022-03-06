@@ -41,13 +41,9 @@ class AlignerWrapperModel(ASRModel):
         self.decode_batch_size = cfg.get("decode_batch_size", 0)
 
         # list possible alignment types here for future work
-        if self.alignment_type == "forced":
+        if self.alignment_type in ["forced", "argmax"]:
             pass
-        elif self.alignment_type == "argmax":
-            pass
-        elif self.alignment_type == "loose":
-            raise NotImplementedError(f"alignment_type=`{self.alignment_type}` is not supported at the moment.")
-        elif self.alignment_type == "rnnt_decoding_aux":
+        elif self.alignment_type in ["loose", "rnnt_decoding_aux"]:
             raise NotImplementedError(f"alignment_type=`{self.alignment_type}` is not supported at the moment.")
         else:
             raise RuntimeError(f"Unsupported alignment type: {self.alignment_type}")
@@ -199,8 +195,9 @@ class AlignerWrapperModel(ASRModel):
         """
         # suppose that there are no whitespaces
         assert len(self._model.tokenizer.text_to_tokens(words[0])) == len(
-            self._model.tokenizer.text_to_tokens(words[0] + " ")
+            self._model.tokenizer.text_to_tokens(f'{words[0]} ')
         )
+
         word_begin, word_len, word_prob = [], [], []
         i = 0
         for word in words:
@@ -227,13 +224,12 @@ class AlignerWrapperModel(ASRModel):
         # suppose that there are no whitespaces anywhere except between words
         space_idx = (np.array(tokens) == " ").nonzero()[0].tolist()
         assert len(words) == len(space_idx) + 1
+        word_begin = [token_begin[0]]
         if len(space_idx) == 0:
-            word_begin = [token_begin[0]]
             word_len = [sum(token_len)]
             word_prob = [sum(t_p * t_l for t_p, t_l in zip(token_prob, token_len)) / word_len[0]]
         else:
             space_word = "[SEP]"
-            word_begin = [token_begin[0]]
             word_len = [sum(token_len[: space_idx[0]])]
             word_prob = [sum(token_prob[k] * token_len[k] for k in range(space_idx[0])) / word_len[-1]]
             words_with_space = [words[0]]

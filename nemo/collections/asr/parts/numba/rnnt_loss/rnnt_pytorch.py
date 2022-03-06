@@ -74,11 +74,11 @@ class _RNNTNumba(Function):
 
         if reduction in ['sum', 'mean']:
             costs = costs.sum().unsqueeze_(-1)
-            if reduction == 'mean':
-                costs /= minibatch_size
+        if reduction == 'mean':
+            costs /= minibatch_size
 
-                if grads is not None:
-                    grads /= minibatch_size
+            if grads is not None:
+                grads /= minibatch_size
 
         ctx.grads = grads
 

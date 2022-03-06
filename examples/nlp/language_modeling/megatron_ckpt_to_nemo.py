@@ -71,8 +71,7 @@ def get_args():
     parser.add_argument("--model_type", type=str, required=True, default="gpt", choices=["gpt", "t5", "bert"])
     parser.add_argument("--local_rank", type=int, required=False, default=os.getenv('LOCAL_RANK', -1))
 
-    args = parser.parse_args()
-    return args
+    return parser.parse_args()
 
 
 def convert(local_rank, rank, world_size, args):

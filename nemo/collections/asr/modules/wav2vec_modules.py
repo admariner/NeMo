@@ -326,15 +326,14 @@ class Wav2VecTransformerEncoder(TransformerEncoder):
 
     def apply_transformer(self, x, padding_mask=None):
         encoder_attn_mask = form_attention_mask(padding_mask)
-        if (
-            self.layer_drop and self.training
-        ):  # Stochastic layer drop as in: Huang et al. https://arxiv.org/pdf/1603.09382.pdf
-            for _, layer in enumerate(self.layers):
+        for layer in self.layers:
+            if     (
+                self.layer_drop and self.training
+            ):
                 p = random.random()
                 if p > self.layer_drop:
                     x = layer(x, encoder_attn_mask, x)
-        else:
-            for _, layer in enumerate(self.layers):
+            else:
                 x = layer(x, encoder_attn_mask, x)
         return x
 
@@ -353,8 +352,7 @@ class GradMultiply(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, scale):
         ctx.scale = scale
-        res = x.new(x)
-        return res
+        return x.new(x)
 
     @staticmethod
     def backward(ctx, grad):

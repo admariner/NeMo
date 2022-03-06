@@ -41,15 +41,12 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
         Returns:
             List of available pre-trained models.
         """
-        results = []
-
         model = PretrainedModelInfo(
             pretrained_model_name="stt_en_contextnet_256",
             description="For details about this model, please visit https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_contextnet_256",
             location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/stt_en_contextnet_256/versions/1.6.0/files/stt_en_contextnet_256.nemo",
         )
-        results.append(model)
-
+        results = [model]
         model = PretrainedModelInfo(
             pretrained_model_name="stt_en_contextnet_512",
             description="For details about this model, please visit https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_contextnet_512",
@@ -212,7 +209,7 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
             )
 
         if new_tokenizer_type.lower() not in ('bpe', 'wpe'):
-            raise ValueError(f'New tokenizer type must be either `bpe` or `wpe`')
+            raise ValueError('New tokenizer type must be either `bpe` or `wpe`')
 
         tokenizer_cfg = OmegaConf.create({'dir': new_tokenizer_dir, 'type': new_tokenizer_type})
 
@@ -401,5 +398,4 @@ class EncDecRNNTBPEModel(EncDecRNNTModel, ASRBPEMixin):
             'use_start_end_token': self.cfg.validation_ds.get('use_start_end_token', False),
         }
 
-        temporary_datalayer = self._setup_dataloader_from_config(config=DictConfig(dl_config))
-        return temporary_datalayer
+        return self._setup_dataloader_from_config(config=DictConfig(dl_config))

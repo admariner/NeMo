@@ -96,7 +96,7 @@ class LatticeLoss(Loss):
         if reduction == "mean_batch":
             ctc_reduction = "none"
             self._apply_batch_mean = True
-        elif reduction in ["sum", "mean", "none"]:
+        elif reduction in {"sum", "mean", "none"}:
             ctc_reduction = reduction
             self._apply_batch_mean = False
 

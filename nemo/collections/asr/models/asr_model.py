@@ -61,9 +61,7 @@ class ASRModel(ModelPT, ABC):
         Returns:
             List of available pre-trained models.
         """
-        # recursively walk the subclasses to generate pretrained model info
-        list_of_models = model_utils.resolve_subclass_pretrained_model_info(cls)
-        return list_of_models
+        return model_utils.resolve_subclass_pretrained_model_info(cls)
 
 
 class ExportableEncDecModel(Exportable):

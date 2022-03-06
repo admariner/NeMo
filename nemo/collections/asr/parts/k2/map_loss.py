@@ -105,14 +105,13 @@ class MAPLoss(torch.nn.Module):
         self.graph_compiler = None
         if token_lm is None:
             logging.warning(
-                f"""token_lm is empty. 
-                            Trainable token_lm is not supported yet. 
-                            Please call .update_graph(token_lm) before using."""
+                """token_lm is empty. \x1f                            Trainable token_lm is not supported yet. \x1f                            Please call .update_graph(token_lm) before using."""
             )
+
         else:
             self.lm_graph = load_graph(token_lm) if isinstance(token_lm, str) else token_lm
             if self.lm_graph is None:
-                raise ValueError(f"""lm_graph is empty.""")
+                raise ValueError("""lm_graph is empty.""")
             else:
                 self.update_graph(self.lm_graph)
 

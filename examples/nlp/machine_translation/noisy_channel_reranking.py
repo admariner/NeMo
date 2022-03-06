@@ -83,7 +83,7 @@ def score_fusion(args, forward_scores, rev_scores, lm_scores, src_lens, tgt_lens
         score += args.target_lm_coef * lm_score
 
         if args.len_pen is not None:
-            score = score / (((5 + tgt_len) / 6) ** args.len_pen)
+            score /= ((5 + tgt_len) / 6) ** args.len_pen
 
         fused_scores.append(score)
 

@@ -60,10 +60,8 @@ def _speech_collate_fn(batch, pad_id):
         _, audio_lengths, _, tokens_lengths = packed_batch
     else:
         raise ValueError("Expects 4 or 5 tensors in the batch!")
-    max_audio_len = 0
     has_audio = audio_lengths[0] is not None
-    if has_audio:
-        max_audio_len = max(audio_lengths).item()
+    max_audio_len = max(audio_lengths).item() if has_audio else 0
     max_tokens_len = max(tokens_lengths).item()
 
     audio_signal, tokens = [], []
@@ -93,9 +91,8 @@ def _speech_collate_fn(batch, pad_id):
     tokens_lengths = torch.stack(tokens_lengths)
     if sample_ids is None:
         return audio_signal, audio_lengths, tokens, tokens_lengths
-    else:
-        sample_ids = torch.tensor(sample_ids, dtype=torch.int32)
-        return audio_signal, audio_lengths, tokens, tokens_lengths, sample_ids
+    sample_ids = torch.tensor(sample_ids, dtype=torch.int32)
+    return audio_signal, audio_lengths, tokens, tokens_lengths, sample_ids
 
 
 class ASRManifestProcessor:
@@ -190,7 +187,9 @@ def expand_audio_filepaths(audio_tar_filepaths, shard_strategy: str, world_size:
 
     # Check for distributed and partition shards accordingly
     if world_size > 1:
-        if shard_strategy == 'scatter':
+        if shard_strategy == 'replicate':
+            logging.info("All tarred dataset shards will be replicated across all nodes.")
+        elif shard_strategy == 'scatter':
             logging.info("All tarred dataset shards will be scattered evenly across all nodes.")
 
             if len(audio_tar_filepaths) % world_size != 0:
@@ -206,8 +205,6 @@ def expand_audio_filepaths(audio_tar_filepaths, shard_strategy: str, world_size:
                 "Partitioning tarred dataset: process (%d) taking shards [%d, %d)", global_rank, begin_idx, end_idx
             )
 
-        elif shard_strategy == 'replicate':
-            logging.info("All tarred dataset shards will be replicated across all nodes.")
         else:
             raise ValueError(f"Invalid shard strategy ! Allowed values are : {valid_shard_strategies}")
 
@@ -301,12 +298,11 @@ class _AudioTextDataset(Dataset):
 
         t, tl = self.manifest_processor.process_text_by_sample(sample=sample)
 
-        if self.return_sample_id:
-            output = f, fl, torch.tensor(t).long(), torch.tensor(tl).long(), index
-        else:
-            output = f, fl, torch.tensor(t).long(), torch.tensor(tl).long()
-
-        return output
+        return (
+            (f, fl, torch.tensor(t).long(), torch.tensor(tl).long(), index)
+            if self.return_sample_id
+            else (f, fl, torch.tensor(t).long(), torch.tensor(tl).long())
+        )
 
     def __len__(self):
         return len(self.manifest_processor.collection)
@@ -586,9 +582,7 @@ class AudioToCharWithDursF0Dataset(AudioToCharDataset):
         max_length = max_length or torch.max(lengths)
         start = torch.tensor(0).int()
         indices = torch.arange(start=start, end=max_length, device=device)  # noqa
-        mask = indices.lt(lengths.view(-1, 1))
-
-        return mask
+        return indices.lt(lengths.view(-1, 1))
 
     @staticmethod
     def interleave(x, y):
@@ -724,9 +718,10 @@ class AudioToCharWithPriorDataset(AudioToCharDataset):
 
         attn_prior = torch.zeros(
             len(attn_prior_list),
-            max([attn_prior_i.shape[0] for attn_prior_i in attn_prior_list]),
-            max([attn_prior_i.shape[1] for attn_prior_i in attn_prior_list]),
+            max(attn_prior_i.shape[0] for attn_prior_i in attn_prior_list),
+            max(attn_prior_i.shape[1] for attn_prior_i in attn_prior_list),
         )
+
 
         for i, attn_prior_i in enumerate(attn_prior_list):
             attn_prior[i, : attn_prior_i.shape[0], : attn_prior_i.shape[1]] = attn_prior_i
@@ -793,15 +788,15 @@ class AudioToCharWithPriorAndPitchDataset(AudioToCharWithPriorDataset):
         pitch_list = batch[5]
         speaker_list = batch[6]
 
-        pitch = torch.zeros(len(pitch_list), max([pitch.shape[0] for pitch in pitch_list]))
+        pitch = torch.zeros(
+            len(pitch_list), max(pitch.shape[0] for pitch in pitch_list)
+        )
+
 
         for i, pitch_i in enumerate(pitch_list):
             pitch[i, : pitch_i.shape[0]] = pitch_i
 
-        speakers = []
-        for i, speaker_i in enumerate(speaker_list):
-            speakers.append(speaker_i)
-
+        speakers = list(speaker_list)
         speakers = torch.stack(speakers).to(text_len.dtype) if speakers[0] is not None else None
 
         return audio, audio_len, text, text_len, attn_prior, pitch, speakers
@@ -948,8 +943,7 @@ class AudioToBPEDataset(_AudioTextDataset):
                 self._tokenizer = tokenizer
 
             def __call__(self, text):
-                t = self._tokenizer.text_to_ids(text)
-                return t
+                return self._tokenizer.text_to_ids(text)
 
         super().__init__(
             manifest_filepath=manifest_filepath,
@@ -1451,8 +1445,7 @@ class TarredAudioToBPEDataset(_TarredAudioToTextDataset):
                 self._tokenizer = tokenizer
 
             def __call__(self, text):
-                t = self._tokenizer.text_to_ids(text)
-                return t
+                return self._tokenizer.text_to_ids(text)
 
         super().__init__(
             audio_tar_filepaths=audio_tar_filepaths,
@@ -1513,13 +1506,13 @@ class BucketingIterator:
 
     def __next__(self):
         batches = []
-        for idx in range(self.bucketing_batch_size):
+        for _ in range(self.bucketing_batch_size):
             try:
                 sample = next(self.wrapped_iter)
             except StopIteration:
                 break
             batches.append(sample)
-        if len(batches) == 0:
+        if not batches:
             raise StopIteration
         return batches
 
@@ -1534,5 +1527,4 @@ class RandomizedChainDataset(ChainDataset):
         for dataset_idx in shuffled_order:
             d = self.datasets[dataset_idx]
             assert isinstance(d, IterableDataset), "ChainDataset only supports IterableDataset"
-            for x in d:
-                yield x
+            yield from d

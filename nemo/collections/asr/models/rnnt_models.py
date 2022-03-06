@@ -50,8 +50,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
         Returns:
             List of available pre-trained models.
         """
-        result = []
-        return result
+        return []
 
     def __init__(self, cfg: DictConfig, trainer: Trainer = None):
         # Get global rank and total number of GPU workers for IterableDataset partitioning, if applicable
@@ -234,7 +233,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
         Returns:
             A list of transcriptions in the same order as paths2audio_files. Will also return
         """
-        if paths2audio_files is None or len(paths2audio_files) == 0:
+        if paths2audio_files is None or not paths2audio_files:
             return {}
         # We will store transcriptions here
         hypotheses = []
@@ -287,11 +286,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
                     )
 
                     hypotheses += best_hyp
-                    if all_hyp is not None:
-                        all_hypotheses += all_hyp
-                    else:
-                        all_hypotheses += best_hyp
-
+                    all_hypotheses += all_hyp if all_hyp is not None else best_hyp
                     del encoded
                     del test_batch
         finally:
@@ -326,7 +321,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
         if self.joint.vocabulary == new_vocabulary:
             logging.warning(f"Old {self.joint.vocabulary} and new {new_vocabulary} match. Not changing anything.")
         else:
-            if new_vocabulary is None or len(new_vocabulary) == 0:
+            if new_vocabulary is None or not new_vocabulary:
                 raise ValueError(f'New vocabulary must be non-empty list of chars. But I got: {new_vocabulary}')
 
             joint_config = self.joint.to_config_dict()
@@ -698,15 +693,11 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
                 self.wer.update(encoded, encoded_len, transcript, transcript_len)
                 _, scores, words = self.wer.compute()
                 self.wer.reset()
-                tensorboard_logs.update({'training_batch_wer': scores.float() / words})
+                tensorboard_logs['training_batch_wer'] = scores.float() / words
 
         else:
             # If experimental fused Joint-Loss-WER is used
-            if (sample_id + 1) % log_every_n_steps == 0:
-                compute_wer = True
-            else:
-                compute_wer = False
-
+            compute_wer = (sample_id + 1) % log_every_n_steps == 0
             # Fused joint step
             loss_value, wer, _, _ = self.joint(
                 encoder_outputs=encoded,
@@ -720,7 +711,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
             tensorboard_logs = {'train_loss': loss_value, 'learning_rate': self._optimizer.param_groups[0]['lr']}
 
             if compute_wer:
-                tensorboard_logs.update({'training_batch_wer': wer})
+                tensorboard_logs['training_batch_wer'] = wer
 
         # Log items
         self.log_dict(tensorboard_logs)
@@ -776,10 +767,6 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
             wer, wer_num, wer_denom = self.wer.compute()
             self.wer.reset()
 
-            tensorboard_logs['val_wer_num'] = wer_num
-            tensorboard_logs['val_wer_denom'] = wer_denom
-            tensorboard_logs['val_wer'] = wer
-
         else:
             # If experimental fused Joint-Loss-WER is used
             compute_wer = True
@@ -803,9 +790,9 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
             if loss_value is not None:
                 tensorboard_logs['val_loss'] = loss_value
 
-            tensorboard_logs['val_wer_num'] = wer_num
-            tensorboard_logs['val_wer_denom'] = wer_denom
-            tensorboard_logs['val_wer'] = wer
+        tensorboard_logs['val_wer_num'] = wer_num
+        tensorboard_logs['val_wer_denom'] = wer_denom
+        tensorboard_logs['val_wer'] = wer
 
         return tensorboard_logs
 
@@ -870,8 +857,7 @@ class EncDecRNNTModel(ASRModel, ASRModuleMixin, Exportable):
             'pin_memory': True,
         }
 
-        temporary_datalayer = self._setup_dataloader_from_config(config=DictConfig(dl_config))
-        return temporary_datalayer
+        return self._setup_dataloader_from_config(config=DictConfig(dl_config))
 
     def on_after_backward(self):
         super().on_after_backward()

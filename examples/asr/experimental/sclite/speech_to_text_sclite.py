@@ -60,11 +60,11 @@ def score_with_sctk(sctk_dir, ref_fname, hyp_fname, out_dir, glm=""):
         rfilter_path = os.path.join(sctk_dir, "bin", "rfilter1")
         if not os.path.exists(rfilter_path):
             raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), rfilter_path)
-        hypglm = os.path.join(out_dir, os.path.basename(hyp_fname)) + ".glm"
+        hypglm = f'{os.path.join(out_dir, os.path.basename(hyp_fname))}.glm'
         rfilt_cmd = [rfilter_path] + [glm]
         with open(hypglm, "w", encoding='utf-8') as hypf, open(hyp_fname, "r", encoding='utf-8') as hyp_in:
             subprocess.run(rfilt_cmd, stdin=hyp_in, stdout=hypf)
-        refglm = os.path.join(out_dir, os.path.basename(ref_fname)) + ".glm"
+        refglm = f'{os.path.join(out_dir, os.path.basename(ref_fname))}.glm'
         with open(refglm, "w", encoding='utf-8') as reff, open(ref_fname, "r", encoding='utf-8') as ref_in:
             subprocess.run(rfilt_cmd, stdin=ref_in, stdout=reff)
     else:
@@ -147,8 +147,8 @@ def main():
         for i in range(len(hypotheses)):
             utt_id = os.path.splitext(os.path.basename(info_list[i]['audio_filepath']))[0]
             # rfilter in sctk likes each transcript to have a space at the beginning
-            hyp_f.write(" " + hypotheses[i] + " (" + utt_id + ")" + "\n")
-            ref_f.write(" " + references[i] + " (" + utt_id + ")" + "\n")
+            hyp_f.write(f" {hypotheses[i]} ({utt_id})" + "\n")
+            ref_f.write(f" {references[i]} ({utt_id})" + "\n")
 
     if use_sctk:
         score_with_sctk(args.sctk_dir, reffile, hypfile, args.out_dir, glm=args.glm)

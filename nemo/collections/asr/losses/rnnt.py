@@ -43,14 +43,14 @@ try:
     import warprnnt_pytorch as warprnnt
 
     WARP_RNNT_AVAILABLE = True
-except (ImportError, ModuleNotFoundError):
+except ImportError:
     WARP_RNNT_AVAILABLE = False
 
 try:
     from nemo.collections.asr.parts.numba.rnnt_loss import RNNTLossNumba
 
     NUMBA_RNNT_AVAILABLE = True
-except (ImportError, ModuleNotFoundError):
+except ImportError:
     NUMBA_RNNT_AVAILABLE = False
 
 

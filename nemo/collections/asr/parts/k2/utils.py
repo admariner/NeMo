@@ -174,8 +174,7 @@ def prep_padded_densefsavec(log_softmax: torch.Tensor, supervisions: torch.Tenso
     log_softmax_padded[:, ::2] = log_softmax_shifted
     supervisions_padded = supervisions.clone()
     supervisions_padded[:, 2] *= 2
-    dense_log_softmax_padded = k2.DenseFsaVec(log_softmax_padded, supervisions_padded)
-    return dense_log_softmax_padded
+    return k2.DenseFsaVec(log_softmax_padded, supervisions_padded)
 
 
 def shift_labels_inpl(lattices: List['k2.Fsa'], shift: int):

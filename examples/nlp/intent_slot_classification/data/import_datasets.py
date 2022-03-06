@@ -49,9 +49,15 @@ def process_atis(infold, outfold, modes=['train', 'test'], do_lower_case=False):
 
     outfiles = {}
     for mode in modes:
-        outfiles[mode] = open(os.path.join(outfold, mode + '.tsv'), 'w', encoding='utf-8')
+        outfiles[mode] = open(
+            os.path.join(outfold, f'{mode}.tsv'), 'w', encoding='utf-8'
+        )
+
         outfiles[mode].write('sentence\tlabel\n')
-        outfiles[mode + '_slots'] = open(f'{outfold}/{mode}_slots.tsv', 'w', encoding='utf-8')
+        outfiles[f'{mode}_slots'] = open(
+            f'{outfold}/{mode}_slots.tsv', 'w', encoding='utf-8'
+        )
+
 
         queries = open(f'{infold}/atis.{mode}.query.csv', 'r', encoding='utf-8').readlines()
         intents = open(f'{infold}/atis.{mode}.intent.csv', 'r', encoding='utf-8').readlines()
@@ -63,7 +69,7 @@ def process_atis(infold, outfold, modes=['train', 'test'], do_lower_case=False):
                 sentence = sentence.lower()
             outfiles[mode].write(f'{sentence}\t{intents[i].strip()}\n')
             slot = ' '.join(slots[i].strip().split()[1:-1])
-            outfiles[mode + '_slots'].write(slot + '\n')
+            outfiles[f'{mode}_slots'].write(slot + '\n')
 
     shutil.copyfile(f'{infold}/atis.dict.intent.csv', f'{outfold}/dict.intents.csv')
     shutil.copyfile(f'{infold}/atis.dict.slots.csv', f'{outfold}/dict.slots.csv')
@@ -79,7 +85,7 @@ def process_snips(infold, outfold, do_lower_case, modes=['train', 'test'], dev_s
     exist = True
     for dataset in ['light', 'speak', 'all']:
         if if_exist(f'{outfold}/{dataset}', [f'{mode}.tsv' for mode in modes]):
-            logging.info(DATABASE_EXISTS_TMP.format('SNIPS-' + dataset, outfold))
+            logging.info(DATABASE_EXISTS_TMP.format(f'SNIPS-{dataset}', outfold))
         else:
             exist = False
     if exist:
@@ -87,8 +93,9 @@ def process_snips(infold, outfold, do_lower_case, modes=['train', 'test'], dev_s
 
     logging.info(f'Processing SNIPS dataset and storing at folders "speak", "light" and "all" under {outfold}.')
     logging.info(
-        f'Processing and importing "smart-speaker-en-close-field" -> "speak" and "smart-speaker-en-close-field" -> "light".'
+        'Processing and importing "smart-speaker-en-close-field" -> "speak" and "smart-speaker-en-close-field" -> "light".'
     )
+
 
     os.makedirs(outfold, exist_ok=True)
 
@@ -96,8 +103,10 @@ def process_snips(infold, outfold, do_lower_case, modes=['train', 'test'], dev_s
     light_dir = 'smart-lights-en-close-field'
 
     light_files = [f'{infold}/{light_dir}/dataset.json']
-    speak_files = [f'{infold}/{speak_dir}/training_dataset.json']
-    speak_files.append(f'{infold}/{speak_dir}/test_dataset.json')
+    speak_files = [
+        f'{infold}/{speak_dir}/training_dataset.json',
+        f'{infold}/{speak_dir}/test_dataset.json',
+    ]
 
     light_train, light_dev, light_slots, light_intents = get_dataset(light_files, dev_split)
     speak_train, speak_dev, speak_slots, speak_intents = get_dataset(speak_files)
@@ -128,18 +137,18 @@ def process_jarvis_datasets(
 
     os.makedirs(outfold, exist_ok=True)
 
-    outfiles = {}
-    intents_list = {}
-    slots_list = {}
-    slots_list_all = {}
+    outfiles = {
+        'dict_intents': open(
+            f'{outfold}/dict.intents.csv', 'w', encoding='utf-8'
+        )
+    }
 
-    outfiles['dict_intents'] = open(f'{outfold}/dict.intents.csv', 'w', encoding='utf-8')
     outfiles['dict_slots'] = open(f'{outfold}/dict.slots.csv', 'w', encoding='utf-8')
 
     outfiles['dict_slots'].write('O\n')
-    slots_list["O"] = 0
-    slots_list_all["O"] = 0
-
+    slots_list = {"O": 0}
+    slots_list_all = {"O": 0}
+    intents_list = {}
     for mode in modes:
         if if_exist(outfold, [f'{mode}.tsv']):
             logging.info(MODE_EXISTS_TMP.format(mode, dataset_name, outfold, mode))
@@ -149,13 +158,19 @@ def process_jarvis_datasets(
             logging.info(f'{mode} mode of {dataset_name}' f' is skipped as it was not found.')
             continue
 
-        outfiles[mode] = open(os.path.join(outfold, mode + '.tsv'), 'w', encoding='utf-8')
+        outfiles[mode] = open(
+            os.path.join(outfold, f'{mode}.tsv'), 'w', encoding='utf-8'
+        )
+
         outfiles[mode].write('sentence\tlabel\n')
-        outfiles[mode + '_slots'] = open(f'{outfold}/{mode}_slots.tsv', 'w', encoding='utf-8')
+        outfiles[f'{mode}_slots'] = open(
+            f'{outfold}/{mode}_slots.tsv', 'w', encoding='utf-8'
+        )
+
 
         queries = open(f'{infold}/{mode}.tsv', 'r', encoding='utf-8').readlines()
 
-        for i, query in enumerate(queries):
+        for query in queries:
             line_splits = query.strip().split("\t")
             if len(line_splits) == 3:
                 intent_str, slot_tags_str, sentence = line_splits
@@ -167,11 +182,7 @@ def process_jarvis_datasets(
                 intents_list[intent_str] = len(intents_list)
                 outfiles['dict_intents'].write(f'{intent_str}\n')
 
-            if ignore_prev_intent:
-                start_token = 2
-            else:
-                start_token = 1
-
+            start_token = 2 if ignore_prev_intent else 1
             if do_lower_case:
                 sentence = sentence.lower()
             sentence_cld = " ".join(sentence.strip().split()[start_token:-1])
@@ -210,9 +221,9 @@ def process_jarvis_datasets(
 
             slots = slots[1:-1]
             slot = ' '.join(slots)
-            outfiles[mode + '_slots'].write(slot + '\n')
+            outfiles[f'{mode}_slots'].write(slot + '\n')
 
-        outfiles[mode + '_slots'].close()
+        outfiles[f'{mode}_slots'].close()
         outfiles[mode].close()
 
     outfiles['dict_slots'].close()

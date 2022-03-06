@@ -34,8 +34,7 @@ python megatron_change_num_partitions.py \
 
 
 def merge_partition(model, partitions, write_path=None):
-    idx = 0
-    for name, param in model.named_parameters():
+    for idx, (name, param) in enumerate(model.named_parameters()):
         if param.shape == partitions[0][idx].shape:
             concated = partitions[0][idx].data
         elif param.shape[0] == partitions[0][idx].shape[0]:
@@ -55,8 +54,6 @@ def merge_partition(model, partitions, write_path=None):
                     f"Can not handle parameter {name}, required shape: {param.shape}, merged shape: {concated.shape}."
                 )
         param.data = concated
-        idx += 1
-
     if write_path is not None:
         model.save_to(write_path)
 
@@ -71,13 +68,11 @@ def split_partition(model, partitions, tp_size, write_path=None):
         raise ValueError("TP size must to be >= 1.")
 
     app_state = AppState()
+    splits = []
     app_state.data_parallel_rank = 0
     app_state.model_parallel_size = tp_size
     app_state.model_parallel_rank = tp_size - 1
-
-    idx = 0
-    splits = []
-    for _, param in model.named_parameters():
+    for idx, (_, param) in enumerate(model.named_parameters()):
         if param.shape == partitions[0][idx].shape:
             split = [partitions[0][idx].data] * tp_size
         elif param.shape[0] == partitions[0][idx].shape[0]:
@@ -85,13 +80,10 @@ def split_partition(model, partitions, tp_size, write_path=None):
         else:
             split = torch.split(partitions[0][idx].data, param.shape[0], dim=0)
         splits.append(split)
-        idx += 1
-
     for i in range(tp_size - 1, -1, -1):
         app_state.model_parallel_rank = i
 
-        idx = 0
-        for name, param in model.named_parameters():
+        for idx, (name, param) in enumerate(model.named_parameters()):
             split_val = splits[idx][i]
 
             if param.shape != split_val.shape:
@@ -112,8 +104,6 @@ def split_partition(model, partitions, tp_size, write_path=None):
                     )
 
             param.data = split_val
-            idx += 1
-
         if write_path is not None:
             model.save_to(write_path)
 

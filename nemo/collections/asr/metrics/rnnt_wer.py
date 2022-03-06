@@ -294,9 +294,9 @@ class AbstractRNNTDecoding(ABC):
         Returns:
             A list of strings.
         """
-        for ind in range(len(hypotheses_list)):
+        for hypotheses in hypotheses_list:
             # Extract the integer encoded hypothesis
-            prediction = hypotheses_list[ind].y_sequence
+            prediction = hypotheses.y_sequence
 
             if type(prediction) != list:
                 prediction = prediction.tolist()
@@ -307,10 +307,10 @@ class AbstractRNNTDecoding(ABC):
 
             # De-tokenize the integer tokens
             hypothesis = self.decode_tokens_to_str(prediction)
-            hypotheses_list[ind].text = hypothesis
+            hypotheses.text = hypothesis
 
             if self.compute_hypothesis_token_set:
-                hypotheses_list[ind].tokens = self.decode_ids_to_tokens(prediction)
+                hypotheses.tokens = self.decode_ids_to_tokens(prediction)
         return hypotheses_list
 
     @abstractmethod
@@ -469,8 +469,7 @@ class RNNTDecoding(AbstractRNNTDecoding):
         Returns:
             A decoded string.
         """
-        hypothesis = ''.join(self.decode_ids_to_tokens(tokens))
-        return hypothesis
+        return ''.join(self.decode_ids_to_tokens(tokens))
 
     def decode_ids_to_tokens(self, tokens: List[int]) -> List[str]:
         """
@@ -483,8 +482,7 @@ class RNNTDecoding(AbstractRNNTDecoding):
         Returns:
             A list of decoded tokens.
         """
-        token_list = [self.labels_map[c] for c in tokens if c != self.blank_id]
-        return token_list
+        return [self.labels_map[c] for c in tokens if c != self.blank_id]
 
 
 class RNNTWER(Metric):
@@ -562,7 +560,7 @@ class RNNTWER(Metric):
             hypotheses, _ = self.decoding.rnnt_decoder_predictions_tensor(encoder_output, encoded_lengths)
 
         if self.log_prediction:
-            logging.info(f"\n")
+            logging.info("\\n")
             logging.info(f"reference :{references[0]}")
             logging.info(f"predicted :{hypotheses[0]}")
 

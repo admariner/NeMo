@@ -50,8 +50,8 @@ def __convert_data(in_file: str, out_text_f: str, out_labels_f: str, max_length:
                     out_labels.write(line)
                 else:
                     line = line.split()
-                    out_text.write(line[0] + ' ')
-                    out_labels.write(line[-1] + ' ')
+                    out_text.write(f'{line[0]} ')
+                    out_labels.write(f'{line[-1]} ')
 
     else:
         words = []
@@ -67,7 +67,7 @@ def __convert_data(in_file: str, out_text_f: str, out_labels_f: str, max_length:
                         # split if the sentence is longer than max_length
                         while len(words) > max_length:
                             tmplabel = labels[:max_length]
-                            for iidx in range(len(tmplabel)):
+                            for _ in range(len(tmplabel)):
                                 if tmplabel.pop() == 'O':
                                     break
                             l = ' '.join([label for label in labels[: len(tmplabel) + 1] if len(label) > 0])
@@ -117,8 +117,8 @@ if __name__ == "__main__":
         raise FileNotFoundError(f"{args.data_file} not found")
 
     logging.info(f'Processing {args.data_file}')
-    out_text = os.path.join(data_dir, 'text_' + prefix + '.txt')
-    out_labels = os.path.join(data_dir, 'labels_' + prefix + '.txt')
+    out_text = os.path.join(data_dir, f'text_{prefix}.txt')
+    out_labels = os.path.join(data_dir, f'labels_{prefix}.txt')
 
     __convert_data(args.data_file, out_text, out_labels, args.max_length)
     logging.info(f'Processing of the {args.data_file} is complete')

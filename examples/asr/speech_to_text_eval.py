@@ -136,14 +136,14 @@ def main(cfg: EvaluationConfig):
     metric_name = 'CER' if cfg.use_cer else 'WER'
     metric_value = word_error_rate(hypotheses=predicted_text, references=ground_truth_text, use_cer=cfg.use_cer)
 
-    if cfg.tolerance is not None:
-        if metric_value > cfg.tolerance:
-            raise ValueError(f"Got {metric_name} of {metric_value}, which was higher than tolerance={cfg.tolerance}")
-
-        logging.info(f'Got {metric_name} of {metric_value}. Tolerance was {cfg.tolerance}')
-    else:
+    if cfg.tolerance is None:
         logging.info(f'Got {metric_name} of {metric_value}')
 
+    elif metric_value > cfg.tolerance:
+        raise ValueError(f"Got {metric_name} of {metric_value}, which was higher than tolerance={cfg.tolerance}")
+
+    else:
+        logging.info(f'Got {metric_name} of {metric_value}. Tolerance was {cfg.tolerance}')
     # Inject the metric name and score into the config, and return the entire config
     with open_dict(cfg):
         cfg.metric_name = metric_name

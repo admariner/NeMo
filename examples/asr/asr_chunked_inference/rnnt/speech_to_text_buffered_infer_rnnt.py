@@ -149,7 +149,7 @@ def get_wer_feat(mfst, asr, tokens_per_chunk, delay, model_stride_in_secs, batch
                     batch.clear()
                     asr.sample_offset += batch_size
 
-            if len(batch) > 0:
+            if batch:
                 asr.batch_size = len(batch)
                 asr.frame_bufferer.batch_size = len(batch)
                 asr.reset()
@@ -192,11 +192,7 @@ def main(args):
 
     device = args.device
     if device is None:
-        if torch.cuda.is_available():
-            device = 'cuda'
-        else:
-            device = 'cpu'
-
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
     logging.info(f"Inference will be done on device : {device}")
 
     # Disable config overwriting
@@ -207,11 +203,7 @@ def main(args):
     # Change Decoding Config
     decoding_cfg = asr_model.cfg.decoding
     with open_dict(decoding_cfg):
-        if args.stateful_decoding:
-            decoding_cfg.strategy = "greedy"
-        else:
-            decoding_cfg.strategy = "greedy_batch"
-
+        decoding_cfg.strategy = "greedy" if args.stateful_decoding else "greedy_batch"
         decoding_cfg.preserve_alignments = True  # required to compute the middle token for transducers.
         decoding_cfg.fused_batch_size = -1  # temporarily stop fused batch during inference.
 

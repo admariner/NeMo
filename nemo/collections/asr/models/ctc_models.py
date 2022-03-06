@@ -48,15 +48,12 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
         Returns:
             List of available pre-trained models.
         """
-        results = []
-
         model = PretrainedModelInfo(
             pretrained_model_name="QuartzNet15x5Base-En",
             description="QuartzNet15x5 model trained on six datasets: LibriSpeech, Mozilla Common Voice (validated clips from en_1488h_2019-12-10), WSJ, Fisher, Switchboard, and NSC Singapore English. It was trained with Apex/Amp optimization level O1 for 600 epochs. The model achieves a WER of 3.79% on LibriSpeech dev-clean, and a WER of 10.05% on dev-other. Please visit https://ngc.nvidia.com/catalog/models/nvidia:nemospeechmodels for further details.",
             location="https://api.ngc.nvidia.com/v2/models/nvidia/nemospeechmodels/versions/1.0.0a5/files/QuartzNet15x5Base-En.nemo",
         )
-        results.append(model)
-
+        results = [model]
         model = PretrainedModelInfo(
             pretrained_model_name="stt_en_quartznet15x5",
             description="For details about this model, please visit https://ngc.nvidia.com/catalog/models/nvidia:nemo:stt_en_quartznet15x5",
@@ -227,7 +224,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
         Returns:
             A list of transcriptions (or raw log probabilities if logprobs is True) in the same order as paths2audio_files
         """
-        if paths2audio_files is None or len(paths2audio_files) == 0:
+        if paths2audio_files is None or not paths2audio_files:
             return {}
 
         if return_hypotheses and logprobs:
@@ -327,7 +324,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
         if self.decoder.vocabulary == new_vocabulary:
             logging.warning(f"Old {self.decoder.vocabulary} and new {new_vocabulary} match. Not changing anything.")
         else:
-            if new_vocabulary is None or len(new_vocabulary) == 0:
+            if new_vocabulary is None or not new_vocabulary:
                 raise ValueError(f'New vocabulary must be non-empty list of chars. But I got: {new_vocabulary}')
             decoder_config = self.decoder.to_config_dict()
             new_decoder_config = copy.deepcopy(decoder_config)
@@ -615,7 +612,7 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
             )
             wer, _, _ = self._wer.compute()
             self._wer.reset()
-            tensorboard_logs.update({'training_batch_wer': wer})
+            tensorboard_logs['training_batch_wer'] = wer
 
         return {'loss': loss_value, 'log': tensorboard_logs}
 
@@ -661,13 +658,12 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
 
     def test_step(self, batch, batch_idx, dataloader_idx=0):
         logs = self.validation_step(batch, batch_idx, dataloader_idx=dataloader_idx)
-        test_logs = {
+        return {
             'test_loss': logs['val_loss'],
             'test_wer_num': logs['val_wer_num'],
             'test_wer_denom': logs['val_wer_denom'],
             'test_wer': logs['val_wer'],
         }
-        return test_logs
 
     def test_dataloader(self):
         if self._test_dl is not None:
@@ -703,5 +699,4 @@ class EncDecCTCModel(ASRModel, ExportableEncDecModel, ASRModuleMixin):
             'pin_memory': True,
         }
 
-        temporary_datalayer = self._setup_dataloader_from_config(config=DictConfig(dl_config))
-        return temporary_datalayer
+        return self._setup_dataloader_from_config(config=DictConfig(dl_config))

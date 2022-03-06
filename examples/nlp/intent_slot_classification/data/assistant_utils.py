@@ -22,9 +22,11 @@ from nemo.utils import logging
 
 def copy_input_files(infold):
     """ Put training files in convenient place for conversion to our format. """
-    our_infold = infold + "/dataset"
+    our_infold = f'{infold}/dataset'
 
-    if os.path.exists(our_infold + "/trainset") and os.path.exists(our_infold + "/testset"):
+    if os.path.exists(f'{our_infold}/trainset') and os.path.exists(
+        our_infold + "/testset"
+    ):
         logging.info("Input folders exists")
         return
 
@@ -34,11 +36,11 @@ def copy_input_files(infold):
     old_infold = (
         infold + '/CrossValidation/autoGeneFromRealAnno/autoGene_2018_03_22-13_01_25_169/CrossValidation/KFold_1'
     )
-    if not os.path.exists(our_infold + "/trainset"):
-        shutil.copytree(old_infold + '/trainset', our_infold + '/trainset')
+    if not os.path.exists(f'{our_infold}/trainset'):
+        shutil.copytree(f'{old_infold}/trainset', f'{our_infold}/trainset')
 
-    if not os.path.exists(our_infold + "/testset"):
-        shutil.copytree(old_infold + '/testset/csv', our_infold + '/testset')
+    if not os.path.exists(f'{our_infold}/testset'):
+        shutil.copytree(f'{old_infold}/testset/csv', f'{our_infold}/testset')
 
 
 def get_intents(infold):
@@ -106,7 +108,7 @@ def get_slot_queries(infold, slot_dict, mode, intent_names):
                 elif word[0] == ":":
                     continue
                 else:
-                    slot_query += str(current_slot) + " "
+                    slot_query += f'{str(current_slot)} '
                     if word[-1] == ']':
                         current_slot = outside_slot
 
@@ -132,7 +134,7 @@ def process_assistant(infold, outfold, modes=['train', 'test']):
     infold += "/dataset"
 
     # get list of intents from train folder (test folder supposed to be the same)
-    intent_names = get_intents(infold + "/trainset")
+    intent_names = get_intents(f'{infold}/trainset')
     write_files(intent_names, f'{outfold}/dict.intents.csv')
 
     # get all train and test queries with their intent

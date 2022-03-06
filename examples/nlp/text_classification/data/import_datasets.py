@@ -52,12 +52,9 @@ def process_imdb(infold, outfold, uncased, modes=['train', 'test']):
 
     outfiles = {}
     for mode in modes:
-        outfiles[mode] = open(os.path.join(outfold, mode + '.tsv'), 'w')
+        outfiles[mode] = open(os.path.join(outfold, f'{mode}.tsv'), 'w')
         for sent in ['neg', 'pos']:
-            if sent == 'neg':
-                label = 0
-            else:
-                label = 1
+            label = 0 if sent == 'neg' else 1
             files = glob.glob(f'{infold}/{mode}/{sent}/*.txt')
             for file in files:
                 with open(file, 'r') as f:
@@ -70,9 +67,8 @@ def process_imdb(infold, outfold, uncased, modes=['train', 'test']):
     for mode in modes:
         outfiles[mode].close()
 
-    class_labels_file = open(os.path.join(outfold, 'label_ids.tsv'), 'w')
-    class_labels_file.write('negative\npositive\n')
-    class_labels_file.close()
+    with open(os.path.join(outfold, 'label_ids.tsv'), 'w') as class_labels_file:
+        class_labels_file.write('negative\npositive\n')
 
 
 def process_sst2(infold, outfold, uncased, splits=['train', 'dev']):
@@ -92,10 +88,7 @@ def process_sst2(infold, outfold, uncased, splits=['train', 'dev']):
         """Read a tab separated value file."""
         with open(input_file, "r") as f:
             reader = csv.reader(f, delimiter="\t", quotechar=quotechar)
-            lines = []
-            for line in reader:
-                lines.append(line)
-            return lines
+            return list(reader)
 
     for split in splits:
         # Load input file.
@@ -137,10 +130,7 @@ def process_chemprot(source_dir, target_dir, uncased, modes=['train', 'test', 'd
         """Reads a tab separated value file."""
         with open(input_file, "r") as f:
             reader = csv.reader(f, delimiter="\t", quotechar=quotechar)
-            lines = []
-            for line in reader:
-                lines.append(line)
-            return lines
+            return list(reader)
 
     outfiles = {}
     label_mapping = {}
@@ -176,9 +166,13 @@ def process_thucnews(infold, outfold):
     logging.info(f'Processing THUCNews dataset and store at {outfold}')
     os.makedirs(outfold, exist_ok=True)
 
-    outfiles = {}
-    for mode in modes:
-        outfiles[mode] = open(os.path.join(outfold, mode + '.tsv'), 'a+', encoding='utf-8')
+    outfiles = {
+        mode: open(
+            os.path.join(outfold, f'{mode}.tsv'), 'a+', encoding='utf-8'
+        )
+        for mode in modes
+    }
+
     categories = ['体育', '娱乐', '家居', '彩票', '房产', '教育', '时尚', '时政', '星座', '游戏', '社会', '科技', '股票', '财经']
     for category in categories:
         label = categories.index(category)
@@ -189,11 +183,7 @@ def process_thucnews(infold, outfold):
 
         for mode in modes:
             logging.info(f'Processing {mode} data of the category {category}')
-            if mode == 'test':
-                files = test_files
-            else:
-                files = train_files
-
+            files = test_files if mode == 'test' else train_files
             if len(files) == 0:
                 logging.info(f'Skipping category {category} for {mode} mode')
                 continue

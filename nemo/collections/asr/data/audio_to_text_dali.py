@@ -33,7 +33,7 @@ try:
     from nvidia.dali.plugin.pytorch import LastBatchPolicy as LastBatchPolicy
 
     HAVE_DALI = True
-except (ImportError, ModuleNotFoundError):
+except ImportError:
     HAVE_DALI = False
 
 __all__ = [
@@ -527,18 +527,18 @@ class _AudioTextDALIDataset(Iterator):
         dali_out = outputs[0]
         manifest_indices = dali_out['manifest_indices'].numpy()
 
-        out = {}
         out_names = ['processed_signal', 'processed_signal_len', 'audio', 'audio_len']
-        for out_name in out_names:
-            if out_name in dali_out:
-                out[out_name] = dali_out[out_name].detach().clone()
+        out = {
+            out_name: dali_out[out_name].detach().clone()
+            for out_name in out_names
+            if out_name in dali_out
+        }
 
         text_tokens = []
         text_tokens_len = []
         max_len = 0
         batch_size = manifest_indices.shape[0]
-        for i, manifest_index in enumerate(manifest_indices):
-
+        for manifest_index in manifest_indices:
             if not self.is_tarred_dataset:
                 # Loose-file dataset. Index is integer based.
                 manifest_index = manifest_index[0]
@@ -743,8 +743,7 @@ class AudioToBPEDALIDataset(_AudioTextDALIDataset):
                 self._tokenizer = tokenizer
 
             def __call__(self, text):
-                t = self._tokenizer.text_to_ids(text)
-                return t
+                return self._tokenizer.text_to_ids(text)
 
         super().__init__(
             manifest_filepath=manifest_filepath,

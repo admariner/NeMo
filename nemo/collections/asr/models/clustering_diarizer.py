@@ -91,10 +91,12 @@ class ClusteringDiarizer(Model, DiarizationMixin):
 
         # init vad model
         self.has_vad_model = False
-        if not self._diarizer_params.oracle_vad:
-            if self._cfg.diarizer.vad.model_path is not None:
-                self._vad_params = self._cfg.diarizer.vad.parameters
-                self._init_vad_model()
+        if (
+            not self._diarizer_params.oracle_vad
+            and self._cfg.diarizer.vad.model_path is not None
+        ):
+            self._vad_params = self._cfg.diarizer.vad.parameters
+            self._init_vad_model()
 
         # init speaker model
         self.multiscale_embeddings_and_timestamps = {}
@@ -202,7 +204,7 @@ class ClusteringDiarizer(Model, DiarizationMixin):
         self._vad_model.eval()
 
         time_unit = int(self._vad_window_length_in_sec / self._vad_shift_length_in_sec)
-        trunc = int(time_unit / 2)
+        trunc = time_unit // 2
         trunc_l = time_unit - trunc
         all_len = 0
         data = []
@@ -226,12 +228,12 @@ class ClusteringDiarizer(Model, DiarizationMixin):
                 else:
                     to_save = pred
                 all_len += len(to_save)
-                outpath = os.path.join(self._vad_dir, data[i] + ".frame")
+                outpath = os.path.join(self._vad_dir, f'{data[i]}.frame')
                 with open(outpath, "a", encoding='utf-8') as fout:
                     for f in range(len(to_save)):
                         fout.write('{0:0.4f}\n'.format(to_save[f]))
             del test_batch
-            if status[i] == 'end' or status[i] == 'single':
+            if status[i] in ['end', 'single']:
                 all_len = 0
 
         if not self._vad_params.smoothing:
@@ -361,7 +363,7 @@ class ClusteringDiarizer(Model, DiarizationMixin):
 
             prefix = get_uniqname_from_filepath(manifest_file)
             name = os.path.join(embedding_dir, prefix)
-            self._embeddings_file = name + f'_embeddings.pkl'
+            self._embeddings_file = f'{name}_embeddings.pkl'
             pkl.dump(self.embeddings, open(self._embeddings_file, 'wb'))
             logging.info("Saved embedding files to {}".format(embedding_dir))
 
@@ -391,12 +393,11 @@ class ClusteringDiarizer(Model, DiarizationMixin):
             self._cfg.batch_size = batch_size
 
         if paths2audio_files:
-            if type(paths2audio_files) is list:
-                self._diarizer_params.manifest_filepath = os.path.join(self._out_dir, 'paths2audio_filepath.json')
-                self.path2audio_files_to_manifest(paths2audio_files, self._diarizer_params.manifest_filepath)
-            else:
+            if type(paths2audio_files) is not list:
                 raise ValueError("paths2audio_files must be of type list of paths to file containing audio file")
 
+            self._diarizer_params.manifest_filepath = os.path.join(self._out_dir, 'paths2audio_filepath.json')
+            self.path2audio_files_to_manifest(paths2audio_files, self._diarizer_params.manifest_filepath)
         self.AUDIO_RTTM_MAP = audio_rttm_map(self._diarizer_params.manifest_filepath)
 
         out_rttm_dir = os.path.join(self._out_dir, 'pred_rttms')

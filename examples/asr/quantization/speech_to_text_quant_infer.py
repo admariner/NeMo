@@ -132,7 +132,7 @@ def main():
 
         # Build sensitivity profile
         quant_layer_sensitivity = {}
-        for i, quant_layer in enumerate(quant_layer_names):
+        for quant_layer in quant_layer_names:
             logging.info(F"Enable {quant_layer}")
             for name, module in asr_model.named_modules():
                 if isinstance(module, quant_nn.TensorQuantizer) and quant_layer in name:
@@ -158,12 +158,14 @@ def main():
         skipped_layers = []
         for quant_layer, _ in quant_layer_sensitivity.items():
             for name, module in asr_model.named_modules():
-                if isinstance(module, quant_nn.TensorQuantizer):
-                    if quant_layer in name:
-                        logging.info(F"Disable {name}")
-                        if not quant_layer in skipped_layers:
-                            skipped_layers.append(quant_layer)
-                        module.disable()
+                if (
+                    isinstance(module, quant_nn.TensorQuantizer)
+                    and quant_layer in name
+                ):
+                    logging.info(F"Disable {name}")
+                    if quant_layer not in skipped_layers:
+                        skipped_layers.append(quant_layer)
+                    module.disable()
             wer_value = evaluate(asr_model, labels_map, wer)
             if wer_value <= args.wer_tolerance:
                 logging.info(
@@ -204,12 +206,12 @@ def evaluate(asr_model, labels_map, wer):
         for batch_ind in range(greedy_predictions.shape[0]):
             seq_len = test_batch[3][batch_ind].cpu().detach().numpy()
             seq_ids = test_batch[2][batch_ind].cpu().detach().numpy()
-            reference = ''.join([labels_map[c] for c in seq_ids[0:seq_len]])
+            reference = ''.join([labels_map[c] for c in seq_ids[:seq_len]])
             references.append(reference)
         del test_batch
-    wer_value = word_error_rate(hypotheses=hypotheses, references=references, use_cer=wer.use_cer)
-
-    return wer_value
+    return word_error_rate(
+        hypotheses=hypotheses, references=references, use_cer=wer.use_cer
+    )
 
 
 if __name__ == '__main__':

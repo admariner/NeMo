@@ -136,16 +136,8 @@ class ConformerEncoder(NeuralModule, Exportable):
         self.d_model = d_model
         self._feat_in = feat_in
         self.scale = math.sqrt(self.d_model)
-        if att_context_size:
-            self.att_context_size = att_context_size
-        else:
-            self.att_context_size = [-1, -1]
-
-        if xscaling:
-            self.xscale = math.sqrt(d_model)
-        else:
-            self.xscale = None
-
+        self.att_context_size = att_context_size or [-1, -1]
+        self.xscale = math.sqrt(d_model) if xscaling else None
         if subsampling_conv_channels == -1:
             subsampling_conv_channels = d_model
         if subsampling and subsampling_factor > 1:
@@ -157,11 +149,9 @@ class ConformerEncoder(NeuralModule, Exportable):
                 conv_channels=subsampling_conv_channels,
                 activation=nn.ReLU(),
             )
-            self._feat_out = d_model
         else:
             self.pre_encode = nn.Linear(feat_in, d_model)
-            self._feat_out = d_model
-
+        self._feat_out = d_model
         if not untie_biases and self_attention_model == "rel_pos":
             d_head = d_model // n_heads
             pos_bias_u = nn.Parameter(torch.Tensor(n_heads, d_head))
@@ -191,7 +181,7 @@ class ConformerEncoder(NeuralModule, Exportable):
             raise ValueError(f"Not valid self_attention_model: '{self_attention_model}'!")
 
         self.layers = nn.ModuleList()
-        for i in range(n_layers):
+        for _ in range(n_layers):
             layer = ConformerLayer(
                 d_model=d_model,
                 d_ff=d_ff,
@@ -265,12 +255,8 @@ class ConformerEncoder(NeuralModule, Exportable):
             att_mask = att_mask.tril(diagonal=self.att_context_size[1])
         att_mask = ~att_mask
 
-        if self.use_pad_mask:
-            pad_mask = ~pad_mask
-        else:
-            pad_mask = None
-
-        for lth, layer in enumerate(self.layers):
+        pad_mask = ~pad_mask if self.use_pad_mask else None
+        for layer in self.layers:
             audio_signal = layer(x=audio_signal, att_mask=att_mask, pos_emb=pos_emb, pad_mask=pad_mask)
 
         if self.out_proj is not None:
@@ -294,8 +280,9 @@ class ConformerEncoder(NeuralModule, Exportable):
 
     def make_pad_mask(self, max_audio_length, seq_lens):
         """Make masking for padding."""
-        mask = self.seq_range[:max_audio_length].repeat(seq_lens.size(0), 1) < seq_lens.unsqueeze(-1)
-        return mask
+        return self.seq_range[:max_audio_length].repeat(
+            seq_lens.size(0), 1
+        ) < seq_lens.unsqueeze(-1)
 
     def enable_pad_mask(self, on=True):
         # On inference, user may chose to disable pad mask

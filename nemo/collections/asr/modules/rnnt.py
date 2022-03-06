@@ -150,7 +150,7 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
 
         # Optional arguments
         forget_gate_bias = prednet.get('forget_gate_bias', 1.0)
-        t_max = prednet.get('t_max', None)
+        t_max = prednet.get('t_max')
         weights_init_scale = prednet.get('weights_init_scale', 1.0)
         hidden_hidden_bias_scale = prednet.get('hidden_hidden_bias_scale', 0.0)
         dropout = prednet.get('dropout', 0.0)
@@ -176,11 +176,7 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
 
         # state maintenance is unnecessary during training forward call
         # to get state, use .predict() method.
-        if self._rnnt_export:
-            add_sos = False
-        else:
-            add_sos = True
-
+        add_sos = not self._rnnt_export
         g, states = self.predict(y, state=states, add_sos=add_sos)  # (B, U, D)
         g = g.transpose(1, 2)  # (B, D, U)
 
@@ -269,9 +265,8 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
 
         # If in training mode, and random_state_sampling is set,
         # initialize state to random normal distribution tensor.
-        if state is None:
-            if self.random_state_sampling and self.training:
-                state = self.initialize_state(y)
+        if state is None and self.random_state_sampling and self.training:
+            state = self.initialize_state(y)
 
         # Forward step through RNN
         y = y.transpose(0, 1)  # (U + 1, B, H)
@@ -314,7 +309,7 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
         else:
             embed = torch.nn.Embedding(vocab_size, pred_n_hidden)
 
-        layers = torch.nn.ModuleDict(
+        return torch.nn.ModuleDict(
             {
                 "embed": embed,
                 "dec_rnn": rnn.rnn(
@@ -330,7 +325,6 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
                 ),
             }
         )
-        return layers
 
     def initialize_state(self, y: torch.Tensor) -> List[torch.Tensor]:
         """
@@ -346,18 +340,41 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
                 H = Hidden size of RNN.
         """
         batch = y.size(0)
-        if self.random_state_sampling and self.training:
-            state = [
-                torch.randn(self.pred_rnn_layers, batch, self.pred_hidden, dtype=y.dtype, device=y.device),
-                torch.randn(self.pred_rnn_layers, batch, self.pred_hidden, dtype=y.dtype, device=y.device),
+        return (
+            [
+                torch.randn(
+                    self.pred_rnn_layers,
+                    batch,
+                    self.pred_hidden,
+                    dtype=y.dtype,
+                    device=y.device,
+                ),
+                torch.randn(
+                    self.pred_rnn_layers,
+                    batch,
+                    self.pred_hidden,
+                    dtype=y.dtype,
+                    device=y.device,
+                ),
             ]
-
-        else:
-            state = [
-                torch.zeros(self.pred_rnn_layers, batch, self.pred_hidden, dtype=y.dtype, device=y.device),
-                torch.zeros(self.pred_rnn_layers, batch, self.pred_hidden, dtype=y.dtype, device=y.device),
+            if self.random_state_sampling and self.training
+            else [
+                torch.zeros(
+                    self.pred_rnn_layers,
+                    batch,
+                    self.pred_hidden,
+                    dtype=y.dtype,
+                    device=y.device,
+                ),
+                torch.zeros(
+                    self.pred_rnn_layers,
+                    batch,
+                    self.pred_hidden,
+                    dtype=y.dtype,
+                    device=y.device,
+                ),
             ]
-        return state
+        )
 
     def score_hypothesis(
         self, hypothesis: rnnt_utils.Hypothesis, cache: Dict[Tuple[int], Any]
@@ -383,10 +400,10 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
             device = _p.device
 
         # parse "blank" tokens in hypothesis
-        if len(hypothesis.y_sequence) > 0 and hypothesis.y_sequence[-1] == self.blank_idx:
-            blank_state = True
-        else:
-            blank_state = False
+        blank_state = (
+            len(hypothesis.y_sequence) > 0
+            and hypothesis.y_sequence[-1] == self.blank_idx
+        )
 
         # Convert last token of hypothesis to torch.Tensor
         target = torch.full([1, 1], fill_value=hypothesis.y_sequence[-1], device=device, dtype=torch.long)
@@ -519,7 +536,7 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
                 new_states[state_id].append(new_state_for_layer)
 
         for state_id in range(len(decoder_states[0])):
-            new_states[state_id] = torch.stack([state for state in new_states[state_id]])
+            new_states[state_id] = torch.stack(list(new_states[state_id]))
 
         return new_states
 
@@ -538,8 +555,8 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
         """
         if batch_states is not None:
             state_list = []
-            for state_id in range(len(batch_states)):
-                states = [batch_states[state_id][layer][idx] for layer in range(self.pred_rnn_layers)]
+            for batch_state in batch_states:
+                states = [batch_state[layer][idx] for layer in range(self.pred_rnn_layers)]
                 state_list.append(states)
 
             return state_list
@@ -561,8 +578,8 @@ class RNNTDecoder(rnnt_abstract.AbstractRNNTDecoder, Exportable):
 
         for state_id in range(len(batch_states[0])):
             batch_list = []
-            for sample_id in range(len(batch_states)):
-                tensor = torch.stack(batch_states[sample_id][state_id])  # [L, H]
+            for batch_state in batch_states:
+                tensor = torch.stack(batch_state[state_id])
                 tensor = tensor.unsqueeze(0)  # [1, L, H]
                 batch_list.append(tensor)
 
@@ -808,8 +825,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable):
                     "decoder_outputs can only be None for fused step!"
                 )
 
-            out = self.joint(encoder_outputs, decoder_outputs)  # [B, T, U, V + 1]
-            return out
+            return self.joint(encoder_outputs, decoder_outputs)
 
         else:
             # At least the loss module must be supplied during fused joint
@@ -903,11 +919,7 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable):
                     sub_transcripts = sub_transcripts.detach()
 
                     original_log_prediction = self.wer.log_prediction
-                    if batch_idx == 0:
-                        self.wer.log_prediction = True
-                    else:
-                        self.wer.log_prediction = False
-
+                    self.wer.log_prediction = batch_idx == 0
                     # Compute the wer (with logging for just 1st sub-batch)
                     self.wer.update(sub_enc, sub_enc_lens, sub_transcripts, sub_transcript_lens)
                     wer, wer_num, wer_denom = self.wer.compute()
@@ -994,13 +1006,13 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable):
             torch.cuda.empty_cache()
 
         # If log_softmax is automatic
-        if self.log_softmax is None:
-            if not res.is_cuda:  # Use log softmax only if on CPU
-                res = res.log_softmax(dim=-1)
-        else:
-            if self.log_softmax:
-                res = res.log_softmax(dim=-1)
-
+        if (
+            self.log_softmax is None
+            and not res.is_cuda
+            or self.log_softmax is not None
+            and self.log_softmax
+        ):  # Use log softmax only if on CPU
+            res = res.log_softmax(dim=-1)
         return res
 
     def _joint_net_modules(self, num_classes, pred_n_hidden, enc_n_hidden, joint_n_hidden, activation, dropout):
@@ -1092,15 +1104,15 @@ class RNNTDecoderJoint(torch.nn.Module, Exportable):
     @property
     def input_types(self):
         state_type = NeuralType(('D', 'B', 'D'), ElementType())
-        mytypes = {
-            'encoder_outputs': NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
+        return {
+            'encoder_outputs': NeuralType(
+                ('B', 'D', 'T'), AcousticEncodedRepresentation()
+            ),
             "targets": NeuralType(('B', 'T'), LabelsType()),
             "target_length": NeuralType(tuple('B'), LengthsType()),
             'input-states-1': state_type,
             'input-states-2': state_type,
         }
-
-        return mytypes
 
     def input_example(self, max_batch=1, max_dim=1):
         decoder_example = self.decoder.input_example(max_batch=max_batch, max_dim=max_dim)

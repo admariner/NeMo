@@ -111,7 +111,10 @@ class ViterbiDecoderWithGraph(NeuralModule):
             raise ValueError(f"Unsupported return_type: {return_type}")
 
         # we assume that self._blank + 1 == num_classes
-        if backend == "k2":
+        if backend == "gtn":
+            raise NotImplementedError("gtn-backed decoding is not implemented")
+
+        elif backend == "k2":
             # use k2 import guard
             from nemo.core.utils.k2_utils import k2_import_guard
 
@@ -129,9 +132,6 @@ class ViterbiDecoderWithGraph(NeuralModule):
                 raise ValueError(f"Unsupported dec_type: {dec_type}")
 
             self._decoder = Decoder(num_classes=self._blank + 1, blank=self._blank, cfg=graph_module_cfg)
-        elif backend == "gtn":
-            raise NotImplementedError("gtn-backed decoding is not implemented")
-
         super().__init__()
 
     def update_graph(self, graph):

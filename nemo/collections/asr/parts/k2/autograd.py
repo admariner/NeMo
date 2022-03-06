@@ -71,15 +71,13 @@ class _AbsFunction(torch.autograd.Function):
 
         sparse_tensor_grad_values = ans_grad.coalesce().values() * values.sign()
 
-        sparse_tensor_grad = torch.sparse_coo_tensor(
+        return torch.sparse_coo_tensor(
             indices=indices,
             values=sparse_tensor_grad_values,
             size=size,
             dtype=sparse_tensor.dtype,
             device=sparse_tensor.device,
         )
-
-        return sparse_tensor_grad
 
 
 def sparse_abs(sparse_tensor: torch.Tensor) -> torch.Tensor:

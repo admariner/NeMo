@@ -79,10 +79,12 @@ class ASRCTMPredictionWriter(ASRPredictionWriter):
                     Check if text is empty or if duration is too short: `{sample.text_raw}`, {sample.duration}"""
                 )
                 with_ctm = False
-            item = {}
-            item["audio_filepath"] = sample.audio_file
-            item["duration"] = sample.duration
-            item["text"] = sample.text_raw
+            item = {
+                "audio_filepath": sample.audio_file,
+                "duration": sample.duration,
+                "text": sample.text_raw,
+            }
+
             if with_ctm:
                 utt_name = Path(sample.audio_file).stem
                 ctm_filepath = os.path.join(self.output_ctm_dir, utt_name) + ".ctm"

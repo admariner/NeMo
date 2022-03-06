@@ -60,15 +60,12 @@ class EncDecSpeakerLabelModel(ModelPT, ExportableEncDecModel):
         Returns:
             List of available pre-trained models.
         """
-        result = []
-
         model = PretrainedModelInfo(
             pretrained_model_name="speakerverification_speakernet",
             location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/speakerverification_speakernet/versions/1.0.0rc1/files/speakerverification_speakernet.nemo",
             description="For details about this model, please visit https://ngc.nvidia.com/catalog/models/nvidia:nemo:speakerverification_speakernet",
         )
-        result.append(model)
-
+        result = [model]
         model = PretrainedModelInfo(
             pretrained_model_name="ecapa_tdnn",
             location="https://api.ngc.nvidia.com/v2/models/nvidia/nemo/ecapa_tdnn/versions/v1/files/ecapa_tdnn.nemo",

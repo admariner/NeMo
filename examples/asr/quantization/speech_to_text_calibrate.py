@@ -128,7 +128,7 @@ def main():
 
     # Save calibrated model(s)
     model_name = args.asr_model.replace(".nemo", "") if args.asr_model.endswith(".nemo") else args.asr_model
-    if not args.calibrator == "histogram":
+    if args.calibrator != "histogram":
         compute_amax(asr_model, method="max")
         asr_model.save_to(F"{model_name}-max-{args.num_calib_batch*args.batch_size}.nemo")
     else:

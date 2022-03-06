@@ -20,8 +20,7 @@ def make_non_pad_mask(input_lengths: torch.Tensor, seq_len: int):
     seq_range = torch.arange(0, seq_len, dtype=torch.int64)
     seq_range_expand = seq_range.unsqueeze(0).expand(batch_size, seq_len)
     seq_length_expand = seq_range_expand.new(input_lengths.cpu()).unsqueeze(-1)
-    mask = seq_range_expand < seq_length_expand
-    return mask
+    return seq_range_expand < seq_length_expand
 
 
 class GradExpNormalize(torch.autograd.Function):

@@ -88,10 +88,8 @@ class BeamSearchDecoderWithLM(NeuralModule):
         probs_list = log_probs
         if self.input_tensor:
             probs = torch.exp(log_probs)
-            probs_list = []
-            for i, prob in enumerate(probs):
-                probs_list.append(prob[: log_probs_length[i], :])
-        res = self.beam_search_func(
+            probs_list = [prob[: log_probs_length[i], :] for i, prob in enumerate(probs)]
+        return self.beam_search_func(
             probs_list,
             self.vocab,
             beam_size=self.beam_width,
@@ -100,4 +98,3 @@ class BeamSearchDecoderWithLM(NeuralModule):
             cutoff_prob=self.cutoff_prob,
             cutoff_top_n=self.cutoff_top_n,
         )
-        return res

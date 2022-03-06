@@ -95,7 +95,7 @@ def __process_english_sentences(
                     samples_count += 1
                 lines_to_combine.append(line)
 
-    if len(lines_to_combine) > 0 and (samples_count < num_samples or num_samples < 0):
+    if lines_to_combine and ((samples_count < num_samples or num_samples < 0)):
         out_file.write(' '.join(lines_to_combine) + '\n')
 
 
@@ -126,7 +126,7 @@ def remove_punctuation(word: str):
     that is often a part of word: don't, it's, and so on
     """
     all_punct_marks = string.punctuation.replace("'", '')
-    return re.sub('[' + all_punct_marks + ']', '', word)
+    return re.sub(f'[{all_punct_marks}]', '', word)
 
 
 def create_text_and_labels(output_dir: str, file_path: str, punct_marks: str = ',.?'):
@@ -153,8 +153,8 @@ def create_text_and_labels(output_dir: str, file_path: str, punct_marks: str = '
     os.makedirs(output_dir, exist_ok=True)
 
     base_name = os.path.basename(file_path)
-    labels_file = os.path.join(output_dir, 'labels_' + base_name)
-    text_file = os.path.join(output_dir, 'text_' + base_name)
+    labels_file = os.path.join(output_dir, f'labels_{base_name}')
+    text_file = os.path.join(output_dir, f'text_{base_name}')
 
     with open(file_path, 'r') as f:
         with open(text_file, 'w') as text_f:
@@ -167,14 +167,10 @@ def create_text_and_labels(output_dir: str, file_path: str, punct_marks: str = '
                         label = word[-1] if word[-1] in punct_marks else 'O'
                         word = remove_punctuation(word)
                         if len(word) > 0:
-                            if word[0].isupper():
-                                label += 'U'
-                            else:
-                                label += 'O'
-
+                            label += 'U' if word[0].isupper() else 'O'
                             word = word.lower()
-                            text += word + ' '
-                            labels += label + ' '
+                            text += f'{word} '
+                            labels += f'{label} '
 
                     text_f.write(text.strip() + '\n')
                     labels_f.write(labels.strip() + '\n')
@@ -211,11 +207,11 @@ if __name__ == "__main__":
     if args.dataset != 'tatoeba':
         raise ValueError("Unsupported dataset.")
 
-    logging.info(f'Downloading tatoeba dataset')
+    logging.info('Downloading tatoeba dataset')
     tatoeba_dataset = os.path.join(args.data_dir, 'sentences.csv')
     __maybe_download_file(tatoeba_dataset, args.dataset)
 
-    logging.info(f'Processing English sentences...')
+    logging.info('Processing English sentences...')
     clean_eng_sentences = os.path.join(args.data_dir, 'clean_eng_sentences.txt')
     __process_english_sentences(
         tatoeba_dataset, clean_eng_sentences, args.percent_to_cut, args.num_lines_to_combine, args.num_samples
@@ -229,7 +225,7 @@ if __name__ == "__main__":
     )
     __split_into_train_dev(clean_eng_sentences, train_file, dev_file, args.percent_dev)
 
-    logging.info(f'Creating text and label files for training')
+    logging.info('Creating text and label files for training')
     create_text_and_labels(args.data_dir, os.path.join(args.data_dir, 'train.txt'))
     create_text_and_labels(args.data_dir, os.path.join(args.data_dir, 'dev.txt'))
 

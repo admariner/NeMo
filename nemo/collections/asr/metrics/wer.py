@@ -53,11 +53,7 @@ def word_error_rate(hypotheses: List[str], references: List[str], use_cer=False)
             r_list = r.split()
         words += len(r_list)
         scores += editdistance.eval(h_list, r_list)
-    if words != 0:
-        wer = 1.0 * scores / words
-    else:
-        wer = float('inf')
-    return wer
+    return 1.0 * scores / words if words != 0 else float('inf')
 
 
 def move_dimension_to_the_front(tensor, dim_index):
@@ -195,8 +191,7 @@ class WER(Metric):
         Returns:
             A decoded string.
         """
-        hypothesis = ''.join(self.decode_ids_to_tokens(tokens))
-        return hypothesis
+        return ''.join(self.decode_ids_to_tokens(tokens))
 
     def decode_ids_to_tokens(self, tokens: List[int]) -> List[str]:
         """
@@ -209,8 +204,7 @@ class WER(Metric):
         Returns:
             A list of decoded tokens.
         """
-        token_list = [self.labels_map[c] for c in tokens if c != self.blank_id]
-        return token_list
+        return [self.labels_map[c] for c in tokens if c != self.blank_id]
 
     def update(
         self,
@@ -250,7 +244,7 @@ class WER(Metric):
                 raise NotImplementedError("Implement me if you need non-CTC decode on predictions")
 
         if self.log_prediction:
-            logging.info(f"\n")
+            logging.info("\\n")
             logging.info(f"reference:{references[0]}")
             logging.info(f"predicted:{hypotheses[0]}")
 

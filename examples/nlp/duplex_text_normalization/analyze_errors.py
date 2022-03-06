@@ -43,7 +43,7 @@ def lcs(X, Y):
     Returns: a list which is the longest common subsequence between X and Y
     """
     m, n = len(X), len(Y)
-    L = [[0 for x in range(n + 1)] for x in range(m + 1)]
+    L = [[0 for _ in range(n + 1)] for _ in range(m + 1)]
 
     # Following steps build L[m+1][n+1] in bottom up fashion. Note
     # that L[i][j] contains length of LCS of X[0..i-1] and Y[0..j-1]
@@ -130,15 +130,14 @@ class ErrorCase:
         self.pred_spans = self.get_spans(pred_tokens_hightlight)
 
         # Determine unhighlighted target spans
-        unhighlighted_target_spans = []
-        for ix, t in enumerate(self.target_spans):
-            if not t[-1]:
-                unhighlighted_target_spans.append((ix, t))
+        unhighlighted_target_spans = [
+            (ix, t) for ix, t in enumerate(self.target_spans) if not t[-1]
+        ]
+
         # Determine unhighlighted pred spans
-        unhighlighted_pred_spans = []
-        for ix, t in enumerate(self.pred_spans):
-            if not t[-1]:
-                unhighlighted_pred_spans.append((ix, t))
+        unhighlighted_pred_spans = [
+            (ix, t) for ix, t in enumerate(self.pred_spans) if not t[-1]
+        ]
 
     @classmethod
     def from_lines(cls, lines: List[str], mode: str):
@@ -173,23 +172,23 @@ class ErrorCase:
         padding_multiplier = 1 if self.mode == constants.TN_MODE else 2
         padding_spaces = ''.join(['&nbsp;'] * padding_multiplier)
         input_str = f'<b>[Input ({input_form})]{padding_spaces}</b>: {self._input}</br>\n'
-        html_str += input_str + ' '
+        html_str += f'{input_str} '
         # Target
         target_html = self.get_spans_html(self.target_spans, self.target_tokens)
         target_form = 'Spoken' if self.mode == constants.TN_MODE else 'Written'
         target_str = f'<b>[Target ({target_form})]</b>: {target_html}</br>\n'
-        html_str += target_str + ' '
+        html_str += f'{target_str} '
         # Pred
         pred_html = self.get_spans_html(self.pred_spans, self.pred_tokens)
         padding_multiplier = 10 if self.mode == constants.TN_MODE else 11
         padding_spaces = ''.join(['&nbsp;'] * padding_multiplier)
         pred_str = f'<b>[Prediction]{padding_spaces}</b>: {pred_html}</br>\n'
-        html_str += pred_str + ' '
+        html_str += f'{pred_str} '
         # Classes
         padding_multiplier = 15 if self.mode == constants.TN_MODE else 16
         padding_spaces = ''.join(['&nbsp;'] * padding_multiplier)
         class_str = f'<b>[Classes]{padding_spaces}</b>: {self.classes}</br>\n'
-        html_str += class_str + ' '
+        html_str += f'{class_str} '
         # Space
         html_str += '</br>\n'
         return html_str
@@ -208,15 +207,14 @@ class ErrorCase:
         cur_start_idx, cur_bool_val = 0, tokens_hightlight[0]
         for idx in range(nb_tokens):
             if idx == nb_tokens - 1:
-                if tokens_hightlight[idx] != cur_bool_val:
+                if tokens_hightlight[idx] == cur_bool_val:
+                    spans.append((cur_start_idx, nb_tokens - 1, cur_bool_val))
+                else:
                     spans.append((cur_start_idx, nb_tokens - 2, cur_bool_val))
                     spans.append((nb_tokens - 1, nb_tokens - 1, tokens_hightlight[idx]))
-                else:
-                    spans.append((cur_start_idx, nb_tokens - 1, cur_bool_val))
-            else:
-                if tokens_hightlight[idx] != cur_bool_val:
-                    spans.append((cur_start_idx, idx - 1, cur_bool_val))
-                    cur_start_idx, cur_bool_val = idx, tokens_hightlight[idx]
+            elif tokens_hightlight[idx] != cur_bool_val:
+                spans.append((cur_start_idx, idx - 1, cur_bool_val))
+                cur_start_idx, cur_bool_val = idx, tokens_hightlight[idx]
         return spans
 
     def get_spans_html(self, spans, tokens):

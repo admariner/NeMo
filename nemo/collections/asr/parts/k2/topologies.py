@@ -54,8 +54,8 @@ def build_default_topo(tokens: List[int], with_self_loops: bool = True) -> 'k2.F
     num_states = len(tokens)
     final_state = num_states
     arcs = "" if with_self_loops else "0 0 0 0 0.0\n"
-    for i in range(num_states):
-        for j in range(num_states):
+    for i in range(final_state):
+        for j in range(final_state):
             if i == j:
                 if with_self_loops:
                     arcs += f"{i} {i} {tokens[i]} 0 0.0\n"
@@ -103,15 +103,13 @@ def build_shared_blank_topo(tokens: List[int], with_self_loops: bool = True) -> 
     num_tokens = len(tokens)
     start = 0
     final = num_tokens + 1
-    arcs = []
-    arcs.append([start, start, 0, 0, 0])
-    arcs.append([start, final, -1, -1, 0])
-    arcs.append([final])
+    arcs = [[start, start, 0, 0, 0], [start, final, -1, -1, 0], [final]]
     for i, p in enumerate(tokens):
         i += 1
-        arcs.append([start, start, p, p, 0])
-        arcs.append([start, i, p, p, 0])
-        arcs.append([i, start, p, 0, 0])
+        arcs.extend(
+            ([start, start, p, p, 0], [start, i, p, p, 0], [i, start, p, 0, 0])
+        )
+
         if with_self_loops:
             arcs.append([i, i, p, 0, 0])
     arcs = sorted(arcs, key=lambda arc: arc[0])
@@ -131,9 +129,7 @@ def build_minimal_topo(tokens: List[int]) -> 'k2.Fsa':
 
     num_tokens = len(tokens)
     final_state = 1
-    arcs = ""
-    for i in range(num_tokens):
-        arcs += f"0 0 {tokens[i]} {tokens[i]} 0.0\n"
+    arcs = "".join(f"0 0 {tokens[i]} {tokens[i]} 0.0\n" for i in range(num_tokens))
     arcs += f"0 {final_state} -1 -1 0.0\n"
     arcs += f"{final_state}"
     ans = k2.Fsa.from_str(arcs, num_aux_labels=1)

@@ -378,13 +378,13 @@ class AudioToMFCCPreprocessor(AudioPreprocessor):
 
         super().__init__(n_window_size, n_window_stride)
 
-        mel_kwargs = {}
+        mel_kwargs = {
+            'f_min': lowfreq,
+            'f_max': highfreq,
+            'n_mels': n_mels,
+            'n_fft': n_fft or 2 ** math.ceil(math.log2(n_window_size)),
+        }
 
-        mel_kwargs['f_min'] = lowfreq
-        mel_kwargs['f_max'] = highfreq
-        mel_kwargs['n_mels'] = n_mels
-
-        mel_kwargs['n_fft'] = n_fft or 2 ** math.ceil(math.log2(n_window_size))
 
         mel_kwargs['win_length'] = n_window_size
         mel_kwargs['hop_length'] = n_window_stride
@@ -608,11 +608,12 @@ class CropOrPadSpectrogramAugmentation(NeuralModule):
 
         # Crop long signal
         if image_len > audio_length:  # randomly slice
-            cutout_images = []
             offset = torch.randint(low=0, high=image_len - audio_length + 1, size=[num_images])
 
-            for idx, offset in enumerate(offset):
-                cutout_images.append(image[idx : idx + 1, :, offset : offset + audio_length])
+            cutout_images = [
+                image[idx : idx + 1, :, offset : offset + audio_length]
+                for idx, offset in enumerate(offset)
+            ]
 
             image = torch.cat(cutout_images, dim=0)
             del cutout_images

@@ -154,11 +154,16 @@ def main():
             # Keep track of soft prompt tags
             prompt_tags = batch[0]['prompt_tags']
 
-            for token, lenn, prompt_tag in zip(tokens_pad.T, lens, prompt_tags):
-                data.append((token, lenn, tokens_to_generate, compute_logprobs, prompt_tag))
+            data.extend(
+                (token, lenn, tokens_to_generate, compute_logprobs, prompt_tag)
+                for token, lenn, prompt_tag in zip(tokens_pad.T, lens, prompt_tags)
+            )
+
         else:
-            for token, lenn in zip(tokens_pad.T, lens):
-                data.append((token, lenn, tokens_to_generate, compute_logprobs))
+            data.extend(
+                (token, lenn, tokens_to_generate, compute_logprobs)
+                for token, lenn in zip(tokens_pad.T, lens)
+            )
 
         return data
 
