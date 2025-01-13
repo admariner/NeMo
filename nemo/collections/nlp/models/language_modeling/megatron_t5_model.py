@@ -15,8 +15,8 @@
 import enum
 import math
 
+from lightning.pytorch.trainer.trainer import Trainer
 from omegaconf.dictconfig import DictConfig
-from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.nlp.data.language_modeling.megatron.dataset_utils import build_train_valid_test_datasets
 from nemo.collections.nlp.models.language_modeling.megatron_lm_encoder_decoder_model import (
@@ -79,7 +79,9 @@ class MegatronT5Model(MegatronLMEncoderDecoderModel):
     @property
     def _build_train_valid_test_datasets_kwargs(self):
         """allows child classes to add kwargs to dataset building"""
-        return dict(max_seq_length_dec=self._cfg.data.seq_length_dec,)
+        return dict(
+            max_seq_length_dec=self._cfg.data.seq_length_dec,
+        )
 
     def _build_vocab(self):
         self.num_sentinel_tokens = self._cfg.tokenizer.num_sentinel_tokens
@@ -160,26 +162,32 @@ class MegatronT5Model(MegatronLMEncoderDecoderModel):
         # T5-related construction
         if tokenizer_cfg.library == 'huggingface' or tokenizer_cfg.library == 'megatron':
             additional_tokens = {
-                'additional_special_tokens': [f'<extra_id_{i}>' for i in range(tokenizer_cfg.num_sentinel_tokens)]
+                'additional_special_tokens': [
+                    f'<extra_id_{i}>' for i in range(tokenizer_cfg.get('num_sentinel_tokens', 0))
+                ]
             }
             if dataset_type == "ul2":
-                for mask_type in ['r', 's', 'x']:
+                mask_types = ['r', 's', 'x']
+                for mask_type in mask_types:
                     additional_tokens['additional_special_tokens'].extend([f'<extra_id_{mask_type}>'])
-            tokenizer.add_special_tokens(additional_tokens)
+            if additional_tokens['additional_special_tokens']:
+                tokenizer.add_special_tokens(additional_tokens)
 
         if tokenizer_cfg.library == 'sentencepiece':
             # NOTE: This is an ugly way to support both NeMo-Megatron trained checkpoints and huggingface checkpoints.
             # Huggingface and Google checkpoints will add sentinel tokens first (right after the base vocabulary), but in NeMo-Megatron, we add <cls>, <sep>, <mask>, <pad>, <bos> etc. beofore sentinel tokens <extra_id_xx>.
             if add_sentinel_tokens_first:
-                cls._add_sentinel_tokens(
-                    tokenizer, tokenizer_cfg.num_sentinel_tokens, add_sentinel_tokens_in_reverse_order
-                )
+                if tokenizer_cfg.get('num_sentinel_tokens', 0) > 0:
+                    cls._add_sentinel_tokens(
+                        tokenizer, tokenizer_cfg.num_sentinel_tokens, add_sentinel_tokens_in_reverse_order
+                    )
                 cls._add_base_special_tokens(tokenizer, is_huggingface_converted_model=True)
             else:
                 cls._add_base_special_tokens(tokenizer, is_huggingface_converted_model=False)
-                cls._add_sentinel_tokens(
-                    tokenizer, tokenizer_cfg.num_sentinel_tokens, add_sentinel_tokens_in_reverse_order
-                )
+                if tokenizer_cfg.get('num_sentinel_tokens', 0) > 0:
+                    cls._add_sentinel_tokens(
+                        tokenizer, tokenizer_cfg.num_sentinel_tokens, add_sentinel_tokens_in_reverse_order
+                    )
 
             if dataset_type == "ul2":
                 for mask_type in ['r', 's', 'x']:
@@ -204,9 +212,9 @@ class MegatronT5Model(MegatronLMEncoderDecoderModel):
         ]
 
         if self.trainer.limit_val_batches <= 1.0 and isinstance(self.trainer.limit_val_batches, float):
-            train_valid_test_num_samples[
-                1
-            ] = 1  # This is to make sure we only have one epoch on every validation iteration
+            train_valid_test_num_samples[1] = (
+                1  # This is to make sure we only have one epoch on every validation iteration
+            )
 
         self._train_ds, self._validation_ds, self._test_ds = build_train_valid_test_datasets(
             cfg=self._cfg,
@@ -237,6 +245,10 @@ class MegatronT5Model(MegatronLMEncoderDecoderModel):
         logging.info(f'Length of val dataset: {len(self._validation_ds)}')
         logging.info(f'Length of test dataset: {len(self._test_ds)}')
         logging.info(f'Finished building {self.model_name} datasets.')
+
+        # Override limit_val_batches to be a multiple of num microbatches to prevent val_step from exiting in between a step
+        self._reconfigure_limit_batches(self.trainer.limit_val_batches, self._validation_dl, 'val')
+
         return self._train_ds, self._validation_ds, self._test_ds
 
     def list_available_models(self):

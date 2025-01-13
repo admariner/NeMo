@@ -17,9 +17,12 @@
 # Adapted by: @adithyare
 
 
+import itertools
+import os
+
 import torch
+from lightning.pytorch.trainer.trainer import Trainer
 from omegaconf.dictconfig import DictConfig
-from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.common.parts.adapter_modules import LinearAdapterConfig
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
@@ -34,6 +37,7 @@ from nemo.collections.nlp.modules.common.megatron.adapters.parallel_adapters imp
     ParallelLinearAdapterConfig,
 )
 from nemo.collections.nlp.modules.common.megatron.utils import average_losses_across_data_parallel_group
+from nemo.collections.nlp.parts.nlp_overrides import NLPSaveRestoreConnector
 from nemo.collections.nlp.parts.utils_funcs import get_last_rank
 from nemo.core.classes.mixins import adapter_mixins
 from nemo.utils import logging, model_utils
@@ -42,6 +46,15 @@ from nemo.utils import logging, model_utils
 class MegatronGPTBaseAdapterModel(MegatronGPTPromptLearningModel):
     def __init__(self, cfg: DictConfig, trainer: Trainer):
         super().__init__(cfg, trainer)
+        save_restore_connector = NLPSaveRestoreConnector()
+        if os.path.isdir(cfg.get('language_model_path')):
+            save_restore_connector.model_extracted_dir = cfg.get('language_model_path')
+        self.frozen_model_cfg = MegatronGPTModel.restore_from(
+            cfg.get('language_model_path'),
+            trainer=trainer,
+            return_config=True,
+            save_restore_connector=save_restore_connector,
+        )
         self.adapter_name_keys = []
 
     def forward(
@@ -80,7 +93,7 @@ class MegatronGPTBaseAdapterModel(MegatronGPTPromptLearningModel):
         return output
 
     def setup(self, stage=None):
-        if stage == 'predict' or self.virtual_prompt_style == VirtualPromptStyle.INFERENCE:
+        if stage == 'predict':
             self.frozen_model.freeze()
             return
 
@@ -101,7 +114,8 @@ class MegatronGPTBaseAdapterModel(MegatronGPTPromptLearningModel):
         Used for generate method only for now.
         """
 
-        def fwd_output_only_func(batch, model):
+        def fwd_output_only_func(dataloader_iter, model):
+            batch = next(dataloader_iter)
             extra_arg = {}
             (
                 tokens,
@@ -148,7 +162,7 @@ class MegatronGPTBaseAdapterModel(MegatronGPTPromptLearningModel):
 
     def load_state_dict(self, state_dict, strict: bool = True):
         """
-        Loads a state_dict expecting the state_dict to contain key,values 
+        Loads a state_dict expecting the state_dict to contain key,values
         only for the adapter parameters.
         """
         for name, module in self.frozen_model.named_modules():
@@ -162,13 +176,13 @@ class MegatronGPTBaseAdapterModel(MegatronGPTPromptLearningModel):
 
     def setup_optimizer_param_groups(self):
         """
-        ModelPT override. Optimizer will get self._optimizer_param_groups. 
+        ModelPT override. Optimizer will get self._optimizer_param_groups.
         Makes two optimizer param groups, one for the frozen model params
-        and one for the prompt-table/prompt-encoder params. The learning 
+        and one for the prompt-table/prompt-encoder params. The learning
         rate for the frozen model's params will always be zero effectively
         freezing the model's params but still allowing for the needed gradients
-        to be passed around in pipeline parallel models. The prompt-encoder 
-        and/or prompt table will use the learning rate set by the user. 
+        to be passed around in pipeline parallel models. The prompt-encoder
+        and/or prompt table will use the learning rate set by the user.
         """
         self.frozen_model.freeze()  # Freeze the entire model
         opt_params = []
@@ -182,7 +196,8 @@ class MegatronGPTBaseAdapterModel(MegatronGPTPromptLearningModel):
         logging.info(f'Optimizer groups set:\n{self.frozen_model.summarize()}')
 
     def get_forward_output_and_loss_func(self):
-        def fwd_output_and_loss_func(batch, model):
+        def fwd_output_and_loss_func(dataloader_iter, model):
+            batch = next(dataloader_iter)
             batch = [x.cuda(non_blocking=True) for x in batch]
             input_ids, labels, loss_mask, position_ids, attention_mask, taskname_ids = batch
             output_tensor = model(input_ids, position_ids, attention_mask, taskname_ids, labels, inference=False)
@@ -196,10 +211,11 @@ class MegatronGPTBaseAdapterModel(MegatronGPTPromptLearningModel):
 
         return fwd_output_and_loss_func
 
-    def training_step(self, batch, batch_idx):
-        # we zero grads here because we also call backward in the apex fwd/bwd functions
+    def training_step(self, dataloader_iter, batch_idx):
+        # we zero grads here because we also call backward in the megatron-core fwd/bwd functions
         self._optimizer.zero_grad()
-        loss_mean = self.fwd_bwd_step(batch, batch_idx, forward_only=False)
+        batch = next(dataloader_iter)
+        loss_mean = self.fwd_bwd_step(itertools.chain([batch]), batch_idx, forward_only=False)
         self.allreduce_gradients()
 
         ## logging
@@ -207,15 +223,15 @@ class MegatronGPTBaseAdapterModel(MegatronGPTPromptLearningModel):
         # we can avoid this broadcast by updating the PTL log function to accept specific ranks
         torch.distributed.broadcast(loss_mean, get_last_rank())
 
-        if self.cfg.precision == 16:
+        if self.torch_dtype == torch.float16:
             loss_scale = self.trainer.precision_plugin.scaler._scale
             if loss_scale is not None:
-                self.log('loss_scale', loss_scale)
+                self.log('loss_scale', loss_scale, batch_size=1)
 
-        self.log('reduced_train_loss', loss_mean, prog_bar=True, rank_zero_only=True)
+        self.log('reduced_train_loss', loss_mean, prog_bar=True, rank_zero_only=True, batch_size=1)
         lr = self._optimizer.param_groups[0]['lr']
-        self.log('lr', lr, rank_zero_only=True)
-        self.log('global_step', self.trainer.global_step, prog_bar=True, rank_zero_only=True)
+        self.log('lr', lr, rank_zero_only=True, batch_size=1)
+        self.log('global_step', self.trainer.global_step, prog_bar=True, rank_zero_only=True, batch_size=1)
 
         # Need to make sure the frozen model param learning rate stays 0.0
         # so forceing lr to be 0.0 for gpt layers before param update
@@ -230,8 +246,8 @@ class MegatronGPTAdapterLearningModel(MegatronGPTBaseAdapterModel):
     Two adapter's are inserted into each Transformer layer in the base GPT Model.
 
     It is assumed that these set of adapters will then be trained for a specific task.
-    Once trained, the adapter weights will be saved and can be re-loaded 
-    and infused into the same GPT Model for inference. 
+    Once trained, the adapter weights will be saved and can be re-loaded
+    and infused into the same GPT Model for inference.
     """
 
     def __init__(self, cfg: DictConfig, trainer: Trainer):
@@ -246,9 +262,6 @@ class MegatronGPTAdapterLearningModel(MegatronGPTBaseAdapterModel):
         ], "Adapter type should be 'linear_adapter' or 'parallel_adapter'"
 
         self.adapter_name_keys = [AdapterName.PRE_ATTN_ADAPTER, AdapterName.POST_ATTN_ADAPTER]
-        frozen_model_cfg = MegatronGPTModel.restore_from(
-            cfg.get('language_model_path'), trainer=trainer, return_config=True
-        )
         for _, layer in self.frozen_model.named_modules():
             if hasattr(layer, 'activations_checkpoint_method'):
                 layer.activations_checkpoint_method = (
@@ -259,7 +272,8 @@ class MegatronGPTAdapterLearningModel(MegatronGPTBaseAdapterModel):
 
         if cfg.adapter_tuning.type == "parallel_adapter":
             adapter_cfg = ParallelLinearAdapterConfig(
-                in_features=frozen_model_cfg.hidden_size,
+                in_features=self.frozen_model_cfg.hidden_size,
+                out_features=self.frozen_model_cfg.hidden_size,
                 dim=cfg.adapter_tuning.adapter_dim,
                 norm_position=cfg.adapter_tuning.get('norm_position', 'pre'),
                 norm_type=cfg.adapter_tuning.get('norm_type', 'mixedfusedlayernorm'),
@@ -269,7 +283,7 @@ class MegatronGPTAdapterLearningModel(MegatronGPTBaseAdapterModel):
             )
         else:
             adapter_cfg = LinearAdapterConfig(
-                in_features=frozen_model_cfg.hidden_size,
+                in_features=self.frozen_model_cfg.hidden_size,
                 dim=cfg.adapter_tuning.adapter_dim,
                 norm_position=cfg.adapter_tuning.get('norm_position', 'pre'),
                 dropout=cfg.adapter_tuning.adapter_dropout,
@@ -281,7 +295,8 @@ class MegatronGPTAdapterLearningModel(MegatronGPTBaseAdapterModel):
                 for adapter_key in self.adapter_name_keys:
                     if model_utils.import_class_by_path(adapter_cfg._target_) in module.get_accepted_adapter_types():
                         module.add_adapter(
-                            name=adapter_key, cfg=adapter_cfg,
+                            name=adapter_key,
+                            cfg=adapter_cfg,
                         )
 
         logging.info(f'After adding adapters:\n{self.frozen_model.summarize()}')
@@ -299,16 +314,13 @@ class MegatronGPTInfusedAdapterModel(MegatronGPTBaseAdapterModel):
     Three adapter's are inserted into each Transformer layer in the base GPT Model. Each adapter is basically a vector that simply scales the key, value or ffn hidden representations.
 
     It is assumed that these set of adapters will then be trained for a specific task.
-    Once trained, the adapter weights will be saved and can be re-loaded 
-    and infused into the same GPT Model for inference. 
+    Once trained, the adapter weights will be saved and can be re-loaded
+    and infused into the same GPT Model for inference.
     """
 
     def __init__(self, cfg: DictConfig, trainer: Trainer):
         super().__init__(cfg, trainer)
         self.adapter_name_keys = [AdapterName.KEY_INFUSED, AdapterName.VALUE_INFUSED, AdapterName.MLP_INFUSED]
-        frozen_model_cfg = MegatronGPTModel.restore_from(
-            cfg.get('language_model_path'), trainer=trainer, return_config=True
-        )
         for _, layer in self.frozen_model.named_modules():
             if hasattr(layer, 'activations_checkpoint_method'):
                 layer.activations_checkpoint_method = (
@@ -323,11 +335,13 @@ class MegatronGPTInfusedAdapterModel(MegatronGPTBaseAdapterModel):
                 for adapter_key in self.adapter_name_keys:
                     if adapter_key == AdapterName.MLP_INFUSED:
                         cfg = MLPInfusedAdapterConfig(
-                            in_features=frozen_model_cfg.ffn_hidden_size // frozen_model_cfg.tensor_model_parallel_size
+                            in_features=self.frozen_model_cfg.ffn_hidden_size
+                            // self.frozen_model_cfg.tensor_model_parallel_size
                         )
                     elif adapter_key in [AdapterName.KEY_INFUSED, AdapterName.VALUE_INFUSED]:
                         cfg = InfusedAdapterConfig(
-                            in_features=frozen_model_cfg.hidden_size // frozen_model_cfg.tensor_model_parallel_size
+                            in_features=self.frozen_model_cfg.hidden_size
+                            // self.frozen_model_cfg.tensor_model_parallel_size
                         )
                     else:
                         raise ValueError(f"Adapter Key {adapter_key} is unknown.")

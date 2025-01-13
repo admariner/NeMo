@@ -17,11 +17,12 @@ import pytest
 import torch
 import torch.nn.functional as F
 from einops import rearrange
-from pytorch_lightning.trainer.trainer import Trainer
+from lightning.pytorch.trainer.trainer import Trainer
 
 from nemo.collections.nlp.modules.common.megatron.attention import ParallelChunkedCrossAttention
 from nemo.collections.nlp.modules.common.megatron.layer_type import LayerType
 from nemo.collections.nlp.modules.common.megatron.megatron_init import initialize_model_parallel_for_nemo
+from nemo.collections.nlp.modules.common.megatron.position_embedding import RotaryEmbedding
 from nemo.collections.nlp.modules.common.megatron.retrieval_token_level_encoder_decoder import (
     MegatronRetrievalTokenLevelEncoderDecoderModule,
 )
@@ -29,7 +30,6 @@ from nemo.collections.nlp.modules.common.megatron.retrieval_transformer import (
     MegatronRetrievalTransformerDecoderModule,
     MegatronRetrievalTransformerEncoderModule,
 )
-from nemo.collections.nlp.modules.common.megatron.rotary_pos_embedding import RotaryEmbedding
 from nemo.collections.nlp.modules.common.megatron.utils import (
     build_attention_mask_3d,
     init_method_normal,
@@ -44,9 +44,24 @@ try:
 except (ImportError, ModuleNotFoundError):
     HAVE_APEX = False
 
+try:
+    from megatron.core import ModelParallelConfig
+
+    HAVE_MEGATRON_CORE = True
+
+except (ImportError, ModuleNotFoundError):
+
+    HAVE_MEGATRON_CORE = False
+
+
+@pytest.fixture()
+def model_parallel_config():
+    config = ModelParallelConfig()
+    return config
+
 
 @pytest.mark.run_only_on('GPU')
-@pytest.mark.skipif(not HAVE_APEX, reason="apex is not installed")
+@pytest.mark.skipif(not HAVE_APEX or not HAVE_MEGATRON_CORE, reason="apex or megatron-core is not installed")
 class TestRetrievalModuleInference:
     @classmethod
     def setup_class(cls):
@@ -58,7 +73,13 @@ class TestRetrievalModuleInference:
         MB_SIZE = 4
         GB_SIZE = 8
         SEED = 1234
-        trainer = Trainer(strategy=NLPDDPStrategy(), devices=GPUS, accelerator='gpu', num_nodes=1, logger=None,)
+        trainer = Trainer(
+            strategy=NLPDDPStrategy(),
+            devices=GPUS,
+            accelerator='gpu',
+            num_nodes=1,
+            logger=None,
+        )
 
         initialize_model_parallel_for_nemo(
             world_size=trainer.world_size,
@@ -81,7 +102,7 @@ class TestRetrievalModuleInference:
         torch.distributed.barrier()
 
     @pytest.mark.unit
-    def test_retrieval_encoder_inference(self):
+    def test_retrieval_encoder_inference(self, model_parallel_config):
 
         init_method_std = 0.02
 
@@ -112,6 +133,7 @@ class TestRetrievalModuleInference:
         scaled_init_method = scaled_init_method_normal(init_method_std, num_layers)
         encoder = (
             MegatronRetrievalTransformerEncoderModule(
+                config=model_parallel_config,
                 init_method=init_method,
                 output_layer_init_method=scaled_init_method,
                 hidden_size=dim,
@@ -160,15 +182,33 @@ class TestRetrievalModuleInference:
             neighbors=neighbors,
         )
         assert (encoder.encoder_output - hidden_emb[:, :64]).abs().max().item() < 1e-5
-        assert (out_gt[:, 0,] - out_2[:, 0]).abs().max().item() < 1e-2
+        assert (
+            out_gt[
+                :,
+                0,
+            ]
+            - out_2[:, 0]
+        ).abs().max().item() < 1e-2
         out_test = encoder(
             retrieved_emb[:, :1],
             context_mask[:, :1],
             context_attn_mask=hidden_mask[:, :64],
             encoder_output=hidden_emb[:, :64],
         )
-        assert (out_gt[:, 0,] - out_test[:, 0]).abs().max().item() < 1e-2
-        assert (out_gt[:, 0,] - out_2[:, 0]).abs().max().item() < 1e-2
+        assert (
+            out_gt[
+                :,
+                0,
+            ]
+            - out_test[:, 0]
+        ).abs().max().item() < 1e-2
+        assert (
+            out_gt[
+                :,
+                0,
+            ]
+            - out_2[:, 0]
+        ).abs().max().item() < 1e-2
 
         for i in range(64, 127):
             out_3 = encoder(
@@ -191,7 +231,13 @@ class TestRetrievalModuleInference:
             neighbors=neighbors,
         )
         assert (encoder.encoder_output - hidden_emb[:, 64:128]).abs().max().item() < 1e-5
-        assert (out_gt[:, :2,] - out_3).abs().max().item() < 1e-2
+        assert (
+            out_gt[
+                :,
+                :2,
+            ]
+            - out_3
+        ).abs().max().item() < 1e-2
         # test inference
         for i in range(128, 191):
             out_4 = encoder(
@@ -215,7 +261,13 @@ class TestRetrievalModuleInference:
         )
 
         assert (encoder.encoder_output - hidden_emb[:, 128:192]).abs().max().item() < 1e-5
-        assert (out_gt[:, :3,] - out_4).abs().max().item() < 1e-2
+        assert (
+            out_gt[
+                :,
+                :3,
+            ]
+            - out_4
+        ).abs().max().item() < 1e-2
 
         out_2 = encoder(
             retrieved_emb[:, :2],
@@ -247,10 +299,16 @@ class TestRetrievalModuleInference:
             neighbors=neighbors,
         )
         assert (encoder.encoder_output - hidden_emb[:, 128:192]).abs().max().item() < 1e-5
-        assert (out_gt[:, :3,] - out_4).abs().max().item() < 1e-2
+        assert (
+            out_gt[
+                :,
+                :3,
+            ]
+            - out_4
+        ).abs().max().item() < 1e-2
 
     @pytest.mark.unit
-    def test_cross_attn_inference(self):
+    def test_cross_attn_inference(self, model_parallel_config):
         num_layers = 1
         init_method_std = 0.02
         batch = 2
@@ -293,7 +351,9 @@ class TestRetrievalModuleInference:
             dec_attn_mask = rearrange(hidden_mask, '(k n) b -> (b k) n', k=chunks)
             context_attn_mask = rearrange(context_mask, 'k r n b -> (b k) (r n)')
             enc_dec_attn_mask_3d = build_attention_mask_3d(
-                source_mask=dec_attn_mask, target_mask=context_attn_mask, attn_mask_type=AttnMaskType.padding,
+                source_mask=dec_attn_mask,
+                target_mask=context_attn_mask,
+                attn_mask_type=AttnMaskType.padding,
             )
             enc_dec_attn_mask_3d = enc_dec_attn_mask_3d[:, None, :, :]
             return enc_dec_attn_mask_3d
@@ -305,6 +365,7 @@ class TestRetrievalModuleInference:
         scaled_init_method = scaled_init_method_normal(init_method_std, num_layers)
         cross_attn = (
             ParallelChunkedCrossAttention(
+                config=model_parallel_config,
                 init_method=init_method,
                 output_layer_init_method=scaled_init_method,
                 layer_number=1,
@@ -414,7 +475,7 @@ class TestRetrievalModuleInference:
         assert (out[i] - out_4[0]).abs().max().item() < 1e-2
 
     @pytest.mark.unit
-    def test_retrieval_decoder_inference(self):
+    def test_retrieval_decoder_inference(self, model_parallel_config):
 
         init_method_std = 0.02
 
@@ -452,6 +513,7 @@ class TestRetrievalModuleInference:
         scaled_init_method = scaled_init_method_normal(init_method_std, num_layers)
         decoder = (
             MegatronRetrievalTransformerDecoderModule(
+                config=model_parallel_config,
                 init_method=init_method,
                 output_layer_init_method=scaled_init_method,
                 hidden_size=dim,
@@ -539,7 +601,7 @@ class TestRetrievalModuleInference:
             assert (out[i] - out_3[0]).abs().max().item() < 1e-2
 
     @pytest.mark.unit
-    def test_encoder_decoder_module_inference(self):
+    def test_encoder_decoder_module_inference(self, model_parallel_config):
         # rotary pos emb dim
         batch = 2
         neighbors = 2
@@ -572,6 +634,7 @@ class TestRetrievalModuleInference:
 
         encoder_decoder = (
             MegatronRetrievalTokenLevelEncoderDecoderModule(
+                config=model_parallel_config,
                 vocab_size=vocab_size,
                 hidden_size=dim,
                 max_position_embeddings=input_length,

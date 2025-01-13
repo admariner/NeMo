@@ -95,7 +95,7 @@ You may restore the saved model like this:
     eval_model.set_trainer(eval_trainer)
     eval_trainer.test(model=eval_model, verbose=False)
 """
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 from omegaconf import DictConfig, OmegaConf
 
 from nemo.collections.nlp.models.text_classification import TextClassificationModel
@@ -109,9 +109,9 @@ from nemo.utils.exp_manager import exp_manager
 def main(cfg: DictConfig) -> None:
     logging.info(f'\nConfig Params:\n{OmegaConf.to_yaml(cfg)}')
     try:
-        strategy = NLPDDPStrategy()
+        strategy = NLPDDPStrategy(find_unused_parameters=True)
     except (ImportError, ModuleNotFoundError):
-        strategy = None
+        strategy = 'auto'
 
     trainer = pl.Trainer(strategy=strategy, **cfg.trainer)
     exp_manager(trainer, cfg.get("exp_manager", None))

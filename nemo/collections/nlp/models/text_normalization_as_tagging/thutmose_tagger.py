@@ -17,8 +17,8 @@ from time import perf_counter
 from typing import Dict, List, Optional
 
 import torch
+from lightning.pytorch import Trainer
 from omegaconf import DictConfig
-from pytorch_lightning import Trainer
 
 from nemo.collections.common.losses import CrossEntropyLoss
 from nemo.collections.nlp.data.text_normalization_as_tagging import (
@@ -236,14 +236,15 @@ class ThutmoseTaggerModel(NLPModel):
         val_loss_tag = self.loss_fn(logits=tag_logits, labels=tag_labels, loss_mask=labels_mask)
         val_loss_semiotic = self.loss_fn(logits=semiotic_logits, labels=semiotic_labels, loss_mask=labels_mask)
         val_loss = val_loss_tag + val_loss_semiotic
+        self.validation_step_outputs.append({'val_loss': val_loss})
         return {'val_loss': val_loss}
 
-    def validation_epoch_end(self, outputs):
+    def on_validation_epoch_end(self):
         """
         Called at the end of validation to aggregate outputs.
         :param outputs: list of individual outputs of each validation step.
         """
-        avg_loss = torch.stack([x['val_loss'] for x in outputs]).mean()
+        avg_loss = torch.stack([x['val_loss'] for x in self.validation_step_outputs]).mean()
 
         # calculate metrics and classification report
         # In our task recall = accuracy, and the recall column - is the per class accuracy
@@ -269,6 +270,8 @@ class ThutmoseTaggerModel(NLPModel):
         self.tag_multiword_classification_report.reset()
         self.semiotic_classification_report.reset()
 
+        self.validation_step_outputs.clear()  # free memory
+
     def test_step(self, batch, batch_idx):
         """
         Lightning calls this inside the test loop with the data from the test dataloader
@@ -276,17 +279,17 @@ class ThutmoseTaggerModel(NLPModel):
         """
         return self.validation_step(batch, batch_idx)
 
-    def test_epoch_end(self, outputs):
+    def on_test_epoch_end(self):
         """
         Called at the end of test to aggregate outputs.
         :param outputs: list of individual outputs of each test step.
         """
-        return self.validation_epoch_end(outputs)
+        return self.on_validation_epoch_end()
 
     # Functions for inference
     @torch.no_grad()
     def _infer(self, sents: List[str]) -> List[List[int]]:
-        """ Main function for Inference
+        """Main function for Inference
 
         Args:
             sents: A list of input sentences (lowercase spoken-domain words separated by space).
