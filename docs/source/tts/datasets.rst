@@ -1,7 +1,7 @@
 Data Preprocessing
 ==================
 
-NeMo TTS recipes support most of public TTS datasets that consist of multiple languages, multiple emotions, and multiple speakers. Current recipes covered English (en-US), German (de-DE), Spanish (es-ES), and Mandarin Chinese (zh-CN), while the support for many other languages is under planning. NeMo provides corpus-specific data preprocessing scripts, as shown in the directory of `scripts/data_processing/tts/ <https://github.com/NVIDIA/NeMo/tree/stable/scripts/dataset_processing/tts/>`_, to convert common public TTS datasets into the format expected by the dataloaders as defined in `nemo/collections/tts/torch/data.py <https://github.com/NVIDIA/NeMo/tree/stable/nemo/collections/tts/torch/data.py>`_. The ``nemo_tts`` collection expects each dataset to consist of a set of utterances in individual audio files plus a ``JSON`` manifest that describes the dataset, with information about one utterance per line. The audio files can be of any format supported by `Pydub <https://github.com/jiaaro/pydub>`_, though we recommend ``WAV`` files as they are the default and have been most thoroughly tested. NeMo supports any original sampling rates of audios, although our scripts of extracting supplementary data and model training all specify the common target sampling rates as either 44100 Hz or 22050 Hz. If the original sampling rate mismatches the target sampling rate, the `feature preprocess <https://github.com/NVIDIA/NeMo/blob/stable/nemo/collections/asr/parts/preprocessing/features.py#L124>`_ can automatically resample the original sampling rate into the target one.
+NeMo TTS recipes support most of public TTS datasets that consist of multiple languages, multiple emotions, and multiple speakers. Current recipes covered English (en-US), German (de-DE), Spanish (es-ES), and Mandarin Chinese (zh-CN), while the support for many other languages is under planning. NeMo provides corpus-specific data preprocessing scripts, as shown in the directory of `scripts/data_processing/tts/ <https://github.com/NVIDIA/NeMo/tree/stable/scripts/dataset_processing/tts/>`_, to convert common public TTS datasets into the format expected by the dataloaders as defined in `nemo/collections/tts/data/dataset.py <https://github.com/NVIDIA/NeMo/tree/stable/nemo/collections/tts/data/dataset.py>`_. The ``nemo_tts`` collection expects each dataset to consist of a set of utterances in individual audio files plus a ``JSON`` manifest that describes the dataset, with information about one utterance per line. The audio files can be of any format supported by `Pydub <https://github.com/jiaaro/pydub>`_, though we recommend ``WAV`` files as they are the default and have been most thoroughly tested. NeMo supports any original sampling rates of audios, although our scripts of extracting supplementary data and model training all specify the common target sampling rates as either 44100 Hz or 22050 Hz. If the original sampling rate mismatches the target sampling rate, the `feature preprocess <https://github.com/NVIDIA/NeMo/blob/stable/nemo/collections/asr/parts/preprocessing/features.py#L124>`_ can automatically resample the original sampling rate into the target one.
 
 There should be one ``JSON`` manifest file per dataset that will be passed in, therefore, if the user wants separate training and validation datasets, they should also have separate manifests. Otherwise, they will be loading validation data with their training data and vice versa. Each line of the manifest should be in the following format:
 
@@ -45,9 +45,7 @@ LJSpeech
 .. code-block:: shell-session
 
     $ python scripts/dataset_processing/tts/ljspeech/get_data.py \
-        --data-root <your_local_dataset_root> \
-        --whitelist-path <your_local_whitelist_filepath> \
-        or default nemo_text_processing/text_normalization/en/data/whitelist/lj_speech.tsv
+        --data-root <your_local_dataset_root>
 
     $ python scripts/dataset_processing/tts/extract_sup_data.py \
         --config-path ljspeech/ds_conf \
@@ -89,7 +87,7 @@ The texts of this dataset has been normalized already. So there is no extra need
 
 
 Thorsten Müller's German Neutral-TTS Datasets
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 There are two German neutral datasets released by Thorsten Müller for now, 21.02 and 22.10, respectively. Version 22.10 has been recorded with a better recording setup, such as recording chamber and better microphone. So it is advised to train models on the 22.10 version because its audio quality is better and it has a way more natural speech flow and higher character rate per second speech. The two datasets are described below and defined in `scripts/dataset_processing/tts/thorsten_neutral/get_data.py:THORSTEN_NEUTRAL <https://github.com/NVIDIA/NeMo/tree/stable/scripts/dataset_processing/tts/thorsten_neutral/get_data.py#L41-L51>`_.
 
 .. code-block:: python
@@ -143,7 +141,7 @@ There are two German neutral datasets released by Thorsten Müller for now, 21.0
 
 HUI Audio Corpus German
 ~~~~~~~~~~~~~~~~~~~~~~~
-* Dataset URL: https://opendata.iisys.de/datasets.html
+* Dataset URL: https://github.com/iisys-hof/HUI-Audio-Corpus-German
 * Dataset Processing Script: https://github.com/NVIDIA/NeMo/tree/stable/scripts/dataset_processing/tts/hui_acg/get_data.py
 * Command Line Instruction:
 
@@ -174,14 +172,20 @@ SFSpeech Chinese/English Bilingual Speech
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 * Dataset URL: https://catalog.ngc.nvidia.com/orgs/nvidia/resources/sf_bilingual_speech_zh_en
 * Dataset Processing Script: https://github.com/NVIDIA/NeMo/tree/stable/scripts/dataset_processing/tts/sfbilingual/get_data.py
-* Command Line Instruction:
+* Command Line Instruction: please refer details in Section 1 (NGC Registry CLI installation), Section 2 (Downloading SFSpeech Dataset), and Section 3 (Creatiung Data Manifests) from https://github.com/NVIDIA/NeMo/blob/main/tutorials/tts/FastPitch_ChineseTTS_Training.ipynb. Below code block briefly describes the steps.
 
 .. code-block:: bash
 
+    # [prerequisite] Install and setup 'ngc' cli tool by following document https://docs.ngc.nvidia.com/cli/cmd.html
+
+    $ ngc registry resource download-version "nvidia/sf_bilingual_speech_zh_en:v1"
+
+    $ unzip sf_bilingual_speech_zh_en_vv1/SF_bilingual.zip -d <your_local_dataset_root>
+
     $ python scripts/dataset_processing/tts/sfbilingual/get_data.py \
-        --data-root <your_local_dataset_root> \
-        --val-size 0.1 \
-        --test-size 0.2 \
+        --data-root <your_local_dataset_root>/SF_bilingual \
+        --val-size 0.005 \
+        --test-size 0.01 \
         --seed-for-ds-split 100
 
     $ python scripts/dataset_processing/tts/extract_sup_data.py \

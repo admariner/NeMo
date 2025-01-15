@@ -16,7 +16,7 @@ import os
 
 import numpy as np
 import pytest
-from pytorch_lightning.trainer.trainer import Trainer
+from lightning.pytorch.trainer.trainer import Trainer
 
 from nemo.collections.nlp.models.language_modeling.megatron_gpt_model import MegatronGPTModel
 from nemo.collections.nlp.modules.common.transformer.text_generation import LengthParam, SamplingParam
@@ -78,6 +78,7 @@ class TestGPTEval:
             "add_BOS": True,
             "all_probs": False,
             "compute_logprob": False,
+            "end_strings": ["<|endoftext|>"],
         }
 
         # test logprob

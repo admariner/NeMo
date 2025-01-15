@@ -1,5 +1,5 @@
-Self-Supervised Learning
-=================================
+Speech Self-Supervised Learning
+===============================
 
 Self-Supervised Learning (SSL) refers to the problem of learning without explicit labels. As 
 any learning process require feedback, without explit labels, SSL derives supervisory signals from 
@@ -8,7 +8,7 @@ from observed part of the input (e.g., filling in the blanks in a sentence or pr
 an image is upright or inverted).
 
 SSL for speech/audio understanding broadly falls into either contrastive or reconstruction 
-based approaches. In contrastive methods, models learn by distinguising between true and distractor 
+based approaches. In contrastive methods, models learn by distinguishing between true and distractor 
 tokens (or latents). Examples of contrastive approaches are Contrastive Predictive Coding (CPC), 
 Masked Language Modeling (MLM) etc. In reconstruction methods, models learn by directly estimating 
 the missing (intentionally leftout) portions of the input. Masked Reconstruction, Autoregressive 
@@ -18,6 +18,10 @@ In the recent past, SSL has been a major benefactor in improving Acoustic Modeli
 encoder module of neural ASR models. Here too, majority of SSL effort is focused on improving AM. 
 While it is common that AM is the focus of SSL in ASR, it can also be utilized in improving other parts of 
 ASR models (e.g., predictor module in transducer based ASR models).
+
+In NeMo, we provide two types of SSL models, `Wav2Vec-BERT <https://arxiv.org/abs/2108.06209>`_ and `NEST <https://arxiv.org/abs/2408.13106>`_. 
+The training script for them can be found in `https://github.com/NVIDIA/NeMo/tree/main/examples/asr/speech_pretraining`.
+
 
 The full documentation tree is as follows:
 

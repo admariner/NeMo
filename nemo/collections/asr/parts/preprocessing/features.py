@@ -60,17 +60,33 @@ def normalize_batch(x, seq_len, normalize_type):
     x_mean = None
     x_std = None
     if normalize_type == "per_feature":
-        x_mean = torch.zeros((seq_len.shape[0], x.shape[1]), dtype=x.dtype, device=x.device)
-        x_std = torch.zeros((seq_len.shape[0], x.shape[1]), dtype=x.dtype, device=x.device)
-        for i in range(x.shape[0]):
-            if x[i, :, : seq_len[i]].shape[1] == 1:
-                raise ValueError(
-                    "normalize_batch with `per_feature` normalize_type received a tensor of length 1. This will result "
-                    "in torch.std() returning nan. Make sure your audio length has enough samples for a single "
-                    "feature (ex. at least `hop_length` for Mel Spectrograms)."
-                )
-            x_mean[i, :] = x[i, :, : seq_len[i]].mean(dim=1)
-            x_std[i, :] = x[i, :, : seq_len[i]].std(dim=1)
+        batch_size = x.shape[0]
+        max_time = x.shape[2]
+
+        # When doing stream capture to a graph, item() is not allowed
+        # becuase it calls cudaStreamSynchronize(). Therefore, we are
+        # sacrificing some error checking when running with cuda graphs.
+        if (
+            torch.cuda.is_available()
+            and not torch.cuda.is_current_stream_capturing()
+            and torch.any(seq_len == 1).item()
+        ):
+            raise ValueError(
+                "normalize_batch with `per_feature` normalize_type received a tensor of length 1. This will result "
+                "in torch.std() returning nan. Make sure your audio length has enough samples for a single "
+                "feature (ex. at least `hop_length` for Mel Spectrograms)."
+            )
+        time_steps = torch.arange(max_time, device=x.device).unsqueeze(0).expand(batch_size, max_time)
+        valid_mask = time_steps < seq_len.unsqueeze(1)
+        x_mean_numerator = torch.where(valid_mask.unsqueeze(1), x, 0.0).sum(axis=2)
+        x_mean_denominator = valid_mask.sum(axis=1)
+        x_mean = x_mean_numerator / x_mean_denominator.unsqueeze(1)
+
+        # Subtract 1 in the denominator to correct for the bias.
+        x_std = torch.sqrt(
+            torch.sum(torch.where(valid_mask.unsqueeze(1), x - x_mean.unsqueeze(2), 0.0) ** 2, axis=2)
+            / (x_mean_denominator.unsqueeze(1) - 1.0)
+        )
         # make sure x_std is not zero
         x_std += CONSTANT
         return (x - x_mean.unsqueeze(2)) / x_std.unsqueeze(2), x_mean, x_std
@@ -95,8 +111,27 @@ def normalize_batch(x, seq_len, normalize_type):
         return x, x_mean, x_std
 
 
+def clean_spectrogram_batch(spectrogram: torch.Tensor, spectrogram_len: torch.Tensor, fill_value=0.0) -> torch.Tensor:
+    """
+    Fill spectrogram values outside the length with `fill_value`
+
+    Args:
+        spectrogram: Tensor with shape [B, C, L] containing batched spectrograms
+        spectrogram_len: Tensor with shape [B] containing the sequence length of each batch element
+        fill_value: value to fill with, 0.0 by default
+
+    Returns:
+        cleaned spectrogram, tensor with shape equal to `spectrogram`
+    """
+    device = spectrogram.device
+    batch_size, _, max_len = spectrogram.shape
+    mask = torch.arange(max_len, device=device)[None, :] >= spectrogram_len[:, None]
+    mask = mask.unsqueeze(1).expand_as(spectrogram)
+    return spectrogram.masked_fill(mask, fill_value)
+
+
 def splice_frames(x, frame_splicing):
-    """ Stacks frames together across feature dim
+    """Stacks frames together across feature dim
 
     input is batch_size, feature_dim, num_frames
     output is batch_size, feature_dim*frame_splicing, num_frames
@@ -162,6 +197,7 @@ class WaveformFeaturizer(object):
         trim_hop_length=512,
         orig_sr=None,
         channel_selector=None,
+        normalize_db=None,
     ):
         audio = AudioSegment.from_file(
             file_path,
@@ -176,6 +212,7 @@ class WaveformFeaturizer(object):
             trim_hop_length=trim_hop_length,
             orig_sr=orig_sr,
             channel_selector=channel_selector,
+            normalize_db=normalize_db,
         )
         return self.process_segment(audio)
 
@@ -224,7 +261,7 @@ class FilterbankFeatures(nn.Module):
         highfreq=None,
         log=True,
         log_zero_guard_type="add",
-        log_zero_guard_value=2 ** -24,
+        log_zero_guard_value=2**-24,
         dither=CONSTANT,
         pad_to=16,
         max_duration=16.7,
@@ -236,6 +273,7 @@ class FilterbankFeatures(nn.Module):
         rng=None,
         nb_augmentation_prob=0.0,
         nb_max_freq=4000,
+        mel_norm="slaney",
         stft_exact_pad=False,  # Deprecated arguments; kept for config compatibility
         stft_conv=False,  # Deprecated arguments; kept for config compatibility
     ):
@@ -270,6 +308,7 @@ class FilterbankFeatures(nn.Module):
         self.hop_length = n_window_stride
         self.n_fft = n_fft or 2 ** math.ceil(math.log2(self.win_length))
         self.stft_pad_amount = (self.n_fft - self.hop_length) // 2 if exact_pad else None
+        self.exact_pad = exact_pad
 
         if exact_pad:
             logging.info("STFT using exact pad")
@@ -283,15 +322,6 @@ class FilterbankFeatures(nn.Module):
         window_fn = torch_windows.get(window, None)
         window_tensor = window_fn(self.win_length, periodic=False) if window_fn else None
         self.register_buffer("window", window_tensor)
-        self.stft = lambda x: torch.stft(
-            x,
-            n_fft=self.n_fft,
-            hop_length=self.hop_length,
-            win_length=self.win_length,
-            center=False if exact_pad else True,
-            window=self.window.to(dtype=torch.float),
-            return_complex=True,
-        )
 
         self.normalize = normalize
         self.log = log
@@ -303,7 +333,9 @@ class FilterbankFeatures(nn.Module):
         highfreq = highfreq or sample_rate / 2
 
         filterbanks = torch.tensor(
-            librosa.filters.mel(sr=sample_rate, n_fft=self.n_fft, n_mels=nfilt, fmin=lowfreq, fmax=highfreq),
+            librosa.filters.mel(
+                sr=sample_rate, n_fft=self.n_fft, n_mels=nfilt, fmin=lowfreq, fmax=highfreq, norm=mel_norm
+            ),
             dtype=torch.float,
         ).unsqueeze(0)
         self.register_buffer("fb", filterbanks)
@@ -348,6 +380,17 @@ class FilterbankFeatures(nn.Module):
         logging.debug(f"using grads: {use_grads}")
         logging.debug(f"nb_augmentation_prob: {nb_augmentation_prob}")
 
+    def stft(self, x):
+        return torch.stft(
+            x,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            win_length=self.win_length,
+            center=False if self.exact_pad else True,
+            window=self.window.to(dtype=torch.float),
+            return_complex=True,
+        )
+
     def log_zero_guard_value_fn(self, x):
         if isinstance(self.log_zero_guard_value, str):
             if self.log_zero_guard_value == "tiny":
@@ -366,15 +409,15 @@ class FilterbankFeatures(nn.Module):
     def get_seq_len(self, seq_len):
         # Assuming that center is True is stft_pad_amount = 0
         pad_amount = self.stft_pad_amount * 2 if self.stft_pad_amount is not None else self.n_fft // 2 * 2
-        seq_len = torch.floor((seq_len + pad_amount - self.n_fft) / self.hop_length) + 1
+        seq_len = torch.floor_divide((seq_len + pad_amount - self.n_fft), self.hop_length) + 1
         return seq_len.to(dtype=torch.long)
 
     @property
     def filter_banks(self):
         return self.fb
 
-    def forward(self, x, seq_len):
-        seq_len = self.get_seq_len(seq_len.float())
+    def forward(self, x, seq_len, linear_spec=False):
+        seq_len = self.get_seq_len(seq_len)
 
         if self.stft_pad_amount is not None:
             x = torch.nn.functional.pad(
@@ -390,7 +433,7 @@ class FilterbankFeatures(nn.Module):
             x = torch.cat((x[:, 0].unsqueeze(1), x[:, 1:] - self.preemph * x[:, :-1]), dim=1)
 
         # disable autocast to get full range of stft values
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast(x.device.type, enabled=False):
             x = self.stft(x)
 
         # torch stft returns complex tensor (of shape [B,N,T]); so convert to magnitude
@@ -408,9 +451,12 @@ class FilterbankFeatures(nn.Module):
         if self.mag_power != 1.0:
             x = x.pow(self.mag_power)
 
+        # return plain spectrogram if required
+        if linear_spec:
+            return x, seq_len
+
         # dot with filterbank energies
         x = torch.matmul(self.fb.to(x.dtype), x)
-
         # log features if required
         if self.log:
             if self.log_zero_guard_type == "add":
@@ -430,7 +476,7 @@ class FilterbankFeatures(nn.Module):
 
         # mask to zero any values beyond seq_len in batch, pad to multiple of `pad_to` (for efficiency)
         max_len = x.size(-1)
-        mask = torch.arange(max_len).to(x.device)
+        mask = torch.arange(max_len, device=x.device)
         mask = mask.repeat(x.size(0), 1) >= seq_len.unsqueeze(1)
         x = x.masked_fill(mask.unsqueeze(1).type(torch.bool).to(device=x.device), self.pad_value)
         del mask
@@ -465,11 +511,12 @@ class FilterbankFeaturesTA(nn.Module):
         highfreq: Optional[float] = None,
         log: bool = True,
         log_zero_guard_type: str = "add",
-        log_zero_guard_value: Union[float, str] = 2 ** -24,
+        log_zero_guard_value: Union[float, str] = 2**-24,
         dither: float = 1e-5,
         window: str = "hann",
         pad_to: int = 0,
         pad_value: float = 0.0,
+        mel_norm="slaney",
         # Seems like no one uses these options anymore. Don't convolute the code by supporting thm.
         use_grads: bool = False,  # Deprecated arguments; kept for config compatibility
         max_duration: float = 16.7,  # Deprecated arguments; kept for config compatibility
@@ -507,26 +554,26 @@ class FilterbankFeaturesTA(nn.Module):
         if window not in self.torch_windows:
             raise ValueError(f"Got window value '{window}' but expected a member of {self.torch_windows.keys()}")
 
-        self._win_length = n_window_size
-        self._hop_length = n_window_stride
+        self.win_length = n_window_size
+        self.hop_length = n_window_stride
         self._sample_rate = sample_rate
         self._normalize_strategy = normalize
         self._use_log = log
         self._preemphasis_value = preemph
-        self._log_zero_guard_type = log_zero_guard_type
-        self._log_zero_guard_value: Union[str, float] = log_zero_guard_value
-        self._dither_value = dither
-        self._pad_to = pad_to
-        self._pad_value = pad_value
-        self._num_fft = n_fft
+        self.log_zero_guard_type = log_zero_guard_type
+        self.log_zero_guard_value: Union[str, float] = log_zero_guard_value
+        self.dither = dither
+        self.pad_to = pad_to
+        self.pad_value = pad_value
+        self.n_fft = n_fft
         self._mel_spec_extractor: torchaudio.transforms.MelSpectrogram = torchaudio.transforms.MelSpectrogram(
             sample_rate=self._sample_rate,
-            win_length=self._win_length,
-            hop_length=self._hop_length,
+            win_length=self.win_length,
+            hop_length=self.hop_length,
             n_mels=nfilt,
             window_fn=self.torch_windows[window],
             mel_scale="slaney",
-            norm="slaney",
+            norm=mel_norm,
             n_fft=n_fft,
             f_max=highfreq,
             f_min=lowfreq,
@@ -535,17 +582,17 @@ class FilterbankFeaturesTA(nn.Module):
 
     @property
     def filter_banks(self):
-        """ Matches the analogous class """
+        """Matches the analogous class"""
         return self._mel_spec_extractor.mel_scale.fb
 
     def _resolve_log_zero_guard_value(self, dtype: torch.dtype) -> float:
-        if isinstance(self._log_zero_guard_value, float):
-            return self._log_zero_guard_value
-        return getattr(torch.finfo(dtype), self._log_zero_guard_value)
+        if isinstance(self.log_zero_guard_value, float):
+            return self.log_zero_guard_value
+        return getattr(torch.finfo(dtype), self.log_zero_guard_value)
 
     def _apply_dithering(self, signals: torch.Tensor) -> torch.Tensor:
-        if self.training and self._dither_value > 0.0:
-            noise = torch.randn_like(signals) * self._dither_value
+        if self.training and self.dither > 0.0:
+            noise = torch.randn_like(signals) * self.dither
             signals = signals + noise
         return signals
 
@@ -556,31 +603,31 @@ class FilterbankFeaturesTA(nn.Module):
         return signals
 
     def _compute_output_lengths(self, input_lengths: torch.Tensor) -> torch.Tensor:
-        out_lengths = input_lengths.div(self._hop_length, rounding_mode="floor").add(1).long()
+        out_lengths = input_lengths.div(self.hop_length, rounding_mode="floor").add(1).long()
         return out_lengths
 
     def _apply_pad_to(self, features: torch.Tensor) -> torch.Tensor:
         # Only apply during training; else need to capture dynamic shape for exported models
-        if not self.training or self._pad_to == 0 or features.shape[-1] % self._pad_to == 0:
+        if not self.training or self.pad_to == 0 or features.shape[-1] % self.pad_to == 0:
             return features
-        pad_length = self._pad_to - (features.shape[-1] % self._pad_to)
-        return torch.nn.functional.pad(features, pad=(0, pad_length), value=self._pad_value)
+        pad_length = self.pad_to - (features.shape[-1] % self.pad_to)
+        return torch.nn.functional.pad(features, pad=(0, pad_length), value=self.pad_value)
 
     def _apply_log(self, features: torch.Tensor) -> torch.Tensor:
         if self._use_log:
             zero_guard = self._resolve_log_zero_guard_value(features.dtype)
-            if self._log_zero_guard_type == "add":
+            if self.log_zero_guard_type == "add":
                 features = features + zero_guard
-            elif self._log_zero_guard_type == "clamp":
+            elif self.log_zero_guard_type == "clamp":
                 features = features.clamp(min=zero_guard)
             else:
-                raise ValueError(f"Unsupported log zero guard type: '{self._log_zero_guard_type}'")
+                raise ValueError(f"Unsupported log zero guard type: '{self.log_zero_guard_type}'")
             features = features.log()
         return features
 
     def _extract_spectrograms(self, signals: torch.Tensor) -> torch.Tensor:
         # Complex FFT needs to be done in single precision
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast('cuda', enabled=False):
             features = self._mel_spec_extractor(waveform=signals)
         return features
 

@@ -23,12 +23,13 @@ from typing import Any, List, Optional
 
 import braceexpand
 import numpy as np
-import webdataset as wd
+import webdataset as wds
 from torch.utils.data import IterableDataset
 
 from nemo.collections.nlp.data.data_utils.data_preprocessing import dataset_to_ids
 from nemo.core import Dataset
 from nemo.utils import logging
+from nemo.utils.distributed import webdataset_split_by_workers
 
 __all__ = ['TranslationDataset', 'TarredTranslationDataset']
 
@@ -82,6 +83,7 @@ class TranslationDataset(Dataset):
         use_cache: bool = False,
         reverse_lang_direction: bool = False,
         prepend_id: int = None,
+        add_bos_eos_to_encoder: bool = True,
     ):
         self.dataset_src = dataset_src
         self.dataset_tgt = dataset_tgt
@@ -96,6 +98,7 @@ class TranslationDataset(Dataset):
         self.max_seq_length_ratio = max_seq_length_ratio
         self.reverse_lang_direction = reverse_lang_direction
         self.prepend_id = prepend_id
+        self.add_bos_eos_to_encoder = add_bos_eos_to_encoder
 
         # deprecation warnings for cache_ids, use_cache, and cache_data_per_node
         if self.cache_ids is True or self.use_cache is True or self.cache_data_per_node is True:
@@ -110,6 +113,8 @@ class TranslationDataset(Dataset):
             cache_ids=self.cache_ids,
             cache_data_per_node=self.cache_data_per_node,
             use_cache=self.use_cache,
+            add_bos_eos=self.add_bos_eos_to_encoder,
+            remove_trailing_newline=True,
         )
         tgt_ids = dataset_to_ids(
             self.dataset_tgt,
@@ -117,6 +122,7 @@ class TranslationDataset(Dataset):
             cache_ids=self.cache_ids,
             cache_data_per_node=self.cache_data_per_node,
             use_cache=self.use_cache,
+            remove_trailing_newline=True,
         )
         if self.clean:
             src_ids, tgt_ids = self.clean_src_and_target(
@@ -159,8 +165,8 @@ class TranslationDataset(Dataset):
         for batch_idx, b in enumerate(batch_indices):
             src_len = max([len(src_ids[i]) for i in b])
             tgt_len = max([len(tgt_ids[i]) for i in b])
-            src_ids_ = self.src_pad_id * np.ones((len(b), src_len), dtype=np.int)
-            tgt_ids_ = self.tgt_pad_id * np.ones((len(b), tgt_len), dtype=np.int)
+            src_ids_ = self.src_pad_id * np.ones((len(b), src_len), dtype=np.int64)
+            tgt_ids_ = self.tgt_pad_id * np.ones((len(b), tgt_len), dtype=np.int64)
             for i, sentence_idx in enumerate(b):
                 src_ids_[i][: len(src_ids[sentence_idx])] = src_ids[sentence_idx]
                 tgt_ids_[i][: len(tgt_ids[sentence_idx])] = tgt_ids[sentence_idx]
@@ -314,8 +320,8 @@ class TarredTranslationDataset(IterableDataset):
         text_tar_filepaths: Either a list of tokenized text tarball filepaths, or a
             string (can be brace-expandable).
         metadata_path (str): Path to the metadata manifest.
-        encoder_tokenizer: Autokenizer wrapped BPE tokenizer model, such as YTTM
-        decoder_tokenizer: Autokenizer wrapped BPE tokenizer model, such as YTTM
+        encoder_tokenizer: Autokenizer wrapped BPE tokenizer model, such as SentenePiece
+        decoder_tokenizer: Autokenizer wrapped BPE tokenizer model, such as SentenePiece
         shuffle_n (int): How many samples to look ahead and load to be shuffled.
             See WebDataset documentation for more details.
             Defaults to 0.
@@ -422,14 +428,15 @@ class TarredTranslationDataset(IterableDataset):
         self.tarpath = text_tar_filepaths
 
         # Put together WebDataset
-        self._dataset = wd.WebDataset(urls=text_tar_filepaths, nodesplitter=None)
-
-        if shuffle_n > 0:
-            self._dataset = self._dataset.shuffle(shuffle_n, initial=shuffle_n)
-        else:
-            logging.info("WebDataset will not shuffle files within the tar files.")
-
-        self._dataset = self._dataset.rename(pkl='pkl', key='__key__').to_tuple('pkl', 'key').map(f=self._build_sample)
+        self._dataset = wds.DataPipeline(
+            wds.SimpleShardList(urls=text_tar_filepaths),
+            webdataset_split_by_workers,
+            wds.shuffle(shuffle_n),
+            wds.tarfile_to_samples(),
+            wds.rename(pkl='pkl', key='__key__'),
+            wds.to_tuple('pkl', 'key'),
+            wds.map(self._build_sample),
+        )
 
     def _build_sample(self, fname):
         # Load file
