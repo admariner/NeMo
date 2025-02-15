@@ -42,6 +42,17 @@ python speech_to_text_streaming_infer.py \
 
 You may drop the '--debug_mode' and '--compare_vs_offline' to speedup the streaming evaluation.
 If compare_vs_offline is not used, then significantly larger batch_size can be used.
+Setting `--pad_and_drop_preencoded` would perform the caching for all steps including the first step.
+It may result in slightly different outputs from the sub-sampling module compared to offline mode for some techniques like striding and sw_striding.
+Enabling it would make it easier to export the model to ONNX.
+
+## Hybrid ASR models
+For Hybrid ASR models which have two decoders, you may select the decoder by --set_decoder DECODER_TYPE, where DECODER_TYPE can be "ctc" or "rnnt".
+If decoder is not set, then the default decoder would be used which is the RNNT decoder for Hybrid ASR models.
+
+## Multi-lookahead models
+For models which support multiple lookaheads, the default is the first one in the list of model.encoder.att_context_size. To change it, you may use --att_context_size, for example --att_context_size [70,1].
+
 
 ## Evaluate a model trained with full context for offline mode
 
@@ -50,7 +61,7 @@ But the accuracy would not be very good with small chunks as there is inconsiste
 The accuracy of the model on the borders of chunks would not be very good.
 
 To use a model trained with full context, you need to pass the chunk_size and shift_size arguments.
-If shift_size is not passed, chunk_size would be use as the shift_size too.
+If shift_size is not passed, chunk_size would be used as the shift_size too.
 Also argument online_normalization should be enabled to simulate a realistic streaming.
 The following command would simulate cache-aware streaming on a pretrained model from NGC with chunk_size of 100, shift_size of 50 and 2 left chunks as left context.
 The chunk_size of 100 would be 100*4*10=4000ms for a model with 4x downsampling and 10ms shift in feature extraction.
@@ -88,8 +99,8 @@ from nemo.utils import logging
 
 def extract_transcriptions(hyps):
     """
-        The transcribed_texts returned by CTC and RNNT models are different.
-        This method would extract and return the text section of the hypothesis.
+    The transcribed_texts returned by CTC and RNNT models are different.
+    This method would extract and return the text section of the hypothesis.
     """
     if isinstance(hyps[0], Hypothesis):
         transcriptions = []
@@ -100,21 +111,23 @@ def extract_transcriptions(hyps):
     return transcriptions
 
 
-def calc_drop_extra_pre_encoded(asr_model, step_num):
+def calc_drop_extra_pre_encoded(asr_model, step_num, pad_and_drop_preencoded):
     # for the first step there is no need to drop any tokens after the downsampling as no caching is being used
-    if step_num == 0:
+    if step_num == 0 and not pad_and_drop_preencoded:
         return 0
     else:
         return asr_model.encoder.streaming_cfg.drop_extra_pre_encoded
 
 
-def perform_streaming(asr_model, streaming_buffer, compare_vs_offline=False, debug_mode=False):
+def perform_streaming(
+    asr_model, streaming_buffer, compare_vs_offline=False, debug_mode=False, pad_and_drop_preencoded=False
+):
     batch_size = len(streaming_buffer.streams_length)
     if compare_vs_offline:
         # would pass the whole audio at once through the model like offline mode in order to compare the results with the stremaing mode
         # the output of the model in the offline and streaming mode should be exactly the same
         with torch.inference_mode():
-            with autocast():
+            with autocast:
                 processed_signal, processed_signal_length = streaming_buffer.get_all_audios()
                 with torch.no_grad():
                     (
@@ -122,6 +135,7 @@ def perform_streaming(asr_model, streaming_buffer, compare_vs_offline=False, deb
                         transcribed_texts,
                         cache_last_channel_next,
                         cache_last_time_next,
+                        cache_last_channel_len,
                         best_hyp,
                     ) = asr_model.conformer_stream_step(
                         processed_signal=processed_signal,
@@ -133,14 +147,16 @@ def perform_streaming(asr_model, streaming_buffer, compare_vs_offline=False, deb
     else:
         final_offline_tran = None
 
-    cache_last_channel, cache_last_time = asr_model.encoder.get_initial_cache_state(batch_size=batch_size)
+    cache_last_channel, cache_last_time, cache_last_channel_len = asr_model.encoder.get_initial_cache_state(
+        batch_size=batch_size
+    )
 
     previous_hypotheses = None
     streaming_buffer_iter = iter(streaming_buffer)
     pred_out_stream = None
     for step_num, (chunk_audio, chunk_lengths) in enumerate(streaming_buffer_iter):
         with torch.inference_mode():
-            with autocast():
+            with autocast:
                 # keep_all_outputs needs to be True for the last step of streaming when model is trained with att_context_style=regular
                 # otherwise the last outputs would get dropped
 
@@ -150,16 +166,20 @@ def perform_streaming(asr_model, streaming_buffer, compare_vs_offline=False, deb
                         transcribed_texts,
                         cache_last_channel,
                         cache_last_time,
+                        cache_last_channel_len,
                         previous_hypotheses,
                     ) = asr_model.conformer_stream_step(
                         processed_signal=chunk_audio,
                         processed_signal_length=chunk_lengths,
                         cache_last_channel=cache_last_channel,
                         cache_last_time=cache_last_time,
+                        cache_last_channel_len=cache_last_channel_len,
                         keep_all_outputs=streaming_buffer.is_buffer_empty(),
                         previous_hypotheses=previous_hypotheses,
                         previous_pred_out=pred_out_stream,
-                        drop_extra_pre_encoded=calc_drop_extra_pre_encoded(asr_model, step_num),
+                        drop_extra_pre_encoded=calc_drop_extra_pre_encoded(
+                            asr_model, step_num, pad_and_drop_preencoded
+                        ),
                         return_transcription=True,
                     )
 
@@ -190,7 +210,10 @@ def perform_streaming(asr_model, streaming_buffer, compare_vs_offline=False, deb
 def main():
     parser = ArgumentParser()
     parser.add_argument(
-        "--asr_model", type=str, required=True, help="Path to an ASR model .nemo file or name of a pretrained model.",
+        "--asr_model",
+        type=str,
+        required=True,
+        help="Path to an ASR model .nemo file or name of a pretrained model.",
     )
     parser.add_argument(
         "--device", type=str, help="The device to load the model onto and perform the streaming", default="cuda"
@@ -243,6 +266,25 @@ def main():
     parser.add_argument(
         "--output_path", type=str, help="path to output file when manifest is used as input", default=None
     )
+    parser.add_argument(
+        "--pad_and_drop_preencoded",
+        action="store_true",
+        help="Enables padding the audio input and then dropping the extra steps after the pre-encoding for all the steps including the the first step. It may make the outputs of the downsampling slightly different from offline mode for some techniques like striding or sw_striding.",
+    )
+
+    parser.add_argument(
+        "--set_decoder",
+        choices=["ctc", "rnnt"],
+        default=None,
+        help="Selects the decoder for Hybrid ASR models which has both the CTC and RNNT decoder. Supported decoders are ['ctc', 'rnnt']",
+    )
+
+    parser.add_argument(
+        "--att_context_size",
+        type=str,
+        default=None,
+        help="Sets the att_context_size for the models which support multiple lookaheads",
+    )
 
     args = parser.parse_args()
     if (args.audio_file is None and args.manifest_file is None) or (
@@ -258,21 +300,20 @@ def main():
         asr_model = nemo_asr.models.ASRModel.from_pretrained(model_name=args.asr_model)
 
     logging.info(asr_model.encoder.streaming_cfg)
+    if args.set_decoder is not None:
+        if hasattr(asr_model, "cur_decoder"):
+            asr_model.change_decoding_strategy(decoder_type=args.set_decoder)
+        else:
+            raise ValueError("Decoder cannot get changed for non-Hybrid ASR models.")
+
+    if args.att_context_size is not None:
+        if hasattr(asr_model.encoder, "set_default_att_context_size"):
+            asr_model.encoder.set_default_att_context_size(att_context_size=json.loads(args.att_context_size))
+        else:
+            raise ValueError("Model does not support multiple lookaheads.")
 
     global autocast
-    if (
-        args.use_amp
-        and torch.cuda.is_available()
-        and hasattr(torch.cuda, 'amp')
-        and hasattr(torch.cuda.amp, 'autocast')
-    ):
-        logging.info("AMP enabled!\n")
-        autocast = torch.cuda.amp.autocast
-    else:
-
-        @contextlib.contextmanager
-        def autocast():
-            yield
+    autocast = torch.amp.autocast(asr_model.device.type, enabled=args.use_amp)
 
     # configure the decoding config
     decoding_cfg = asr_model.cfg.decoding
@@ -312,14 +353,21 @@ def main():
     else:
         online_normalization = False
 
-    streaming_buffer = CacheAwareStreamingAudioBuffer(model=asr_model, online_normalization=online_normalization)
+    streaming_buffer = CacheAwareStreamingAudioBuffer(
+        model=asr_model,
+        online_normalization=online_normalization,
+        pad_and_drop_preencoded=args.pad_and_drop_preencoded,
+    )
     if args.audio_file is not None:
         # stream a single audio file
         processed_signal, processed_signal_length, stream_id = streaming_buffer.append_audio_file(
             args.audio_file, stream_id=-1
         )
         perform_streaming(
-            asr_model=asr_model, streaming_buffer=streaming_buffer, compare_vs_offline=args.compare_vs_offline
+            asr_model=asr_model,
+            streaming_buffer=streaming_buffer,
+            compare_vs_offline=args.compare_vs_offline,
+            pad_and_drop_preencoded=args.pad_and_drop_preencoded,
         )
     else:
         # stream audio files in a manifest file in batched mode
@@ -351,6 +399,7 @@ def main():
                     streaming_buffer=streaming_buffer,
                     compare_vs_offline=args.compare_vs_offline,
                     debug_mode=args.debug_mode,
+                    pad_and_drop_preencoded=args.pad_and_drop_preencoded,
                 )
                 all_streaming_tran.extend(streaming_tran)
                 if args.compare_vs_offline:
@@ -373,7 +422,7 @@ def main():
                 "streaming_out_"
                 + os.path.splitext(os.path.basename(args.asr_model))[0]
                 + "_"
-                + os.path.splitext(os.path.basename(args.test_manifest))[0]
+                + os.path.splitext(os.path.basename(args.manifest_file))[0]
                 + ".json"
             )
 

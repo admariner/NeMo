@@ -1,5 +1,9 @@
+
+Example With MCV
+================
+
 ########################################################################
-Example: Kinyarwanda ASR using Mozilla Common Voice Dataset
+Kinyarwanda ASR using Mozilla Common Voice Dataset
 ########################################################################
 
 In this example, we describe essential steps of training an ASR model for a new language (Kinyarwanda). Namely,
@@ -189,7 +193,7 @@ It will write the resampled .wav-files to the specified directory and save a new
 Data Preprocessing
 ******************
 
-Before we start training the model on the above manifest files, we need to preprocess the text data. Data pre-processing is done to reduce ambiguity in transcrits. This is an essential step, and often requires moderate expertise in the language.
+Before we start training the model on the above manifest files, we need to preprocess the text data. Data pre-processing is done to reduce ambiguity in transcripts. This is an essential step, and often requires moderate expertise in the language.
 
 We used the following script
 **prepare_dataset_kinyarwanda.py**:
@@ -200,17 +204,8 @@ We used the following script
     import os
     import re
     from collections import defaultdict
+    from nemo.collections.asr.parts.utils.manifest_utils import read_manifest, write_manifest
     from tqdm.auto import tqdm
-
-    def read_manifest(path):
-        manifest = []
-        with open(path, 'r') as f:
-            for line in tqdm(f, desc="Reading manifest data"):
-                line = line.replace("\n", "")
-                data = json.loads(line)
-                manifest.append(data)
-        return manifest
-
 
     def write_processed_manifest(data, original_path):
         original_manifest_name = os.path.basename(original_path)
@@ -218,10 +213,7 @@ We used the following script
 
         manifest_dir = os.path.split(original_path)[0]
         filepath = os.path.join(manifest_dir, new_manifest_name)
-        with open(filepath, 'w') as f:
-            for datum in tqdm(data, desc="Writing manifest data"):
-                datum = json.dumps(datum)
-                f.write(f"{datum}\n")
+        write_manifest(filepath, data)
         print(f"Finished writing manifest: {filepath}")
         return filepath
 
@@ -437,7 +429,7 @@ Training from scratch and finetuning
 ASR models
 ##########
 
-Our goal was to train two ASR models with different architectures: `Conformer-CTC <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#conformer-ctc>`_ and `Conformer-Transducer <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/asr/models.html#conformer-transducer>`_, with around 120 million parameters.
+Our goal was to train two ASR models with different architectures: :ref:`Conformer-CTC <Conformer-CTC_model>` and :ref:`Conformer-Transducer <Conformer-Transducer_model>`, with around 120 million parameters.
 The CTC model predicts output tokens for each timestep. The outputs are assumed to be independent of each other. As a result the CTC models work faster but they can produce outputs that are inconsistent with each other. CTC models are often combined with external language models in production. In contrast, the Transducer models contain the decoding part which generates the output tokens one by one and the next token prediction depends on this history. Due to autoregressive nature of decoding the inference speed is several times slower than that of CTC models, but the quality is usually better because it can incorporate language model information within the same model.
 
 Training scripts and configs
@@ -612,7 +604,7 @@ Error analysis
 
 Still, even WER of 16% is not as good as we usually get for other languages trained with NeMo toolkit, so we may want to look at the errors that the model makes to better understand what's the problem.
 
-We can use `Speech Data Explorer <https://docs.nvidia.com/deeplearning/nemo/user-guide/docs/en/stable/tools/speech_data_explorer.html>`_ to analyze the errors.
+We can use :doc:`Speech Data Explorer <../../tools/speech_data_explorer>` to analyze the errors.
 
 If we run
 

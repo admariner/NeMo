@@ -13,24 +13,25 @@
 # limitations under the License.
 
 import contextlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import torch
 from hydra.utils import instantiate
+from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 from omegaconf import MISSING, DictConfig, OmegaConf, open_dict
 from omegaconf.errors import ConfigAttributeError
-from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
 from torch import nn
 
 from nemo.collections.common.parts.preprocessing import parsers
-from nemo.collections.tts.helpers.helpers import (
+from nemo.collections.tts.losses.tacotron2loss import Tacotron2Loss
+from nemo.collections.tts.models.base import SpectrogramGenerator
+from nemo.collections.tts.parts.utils.helpers import (
+    g2p_backward_compatible_support,
     get_mask_from_lengths,
     tacotron2_log_to_tb_func,
     tacotron2_log_to_wandb_func,
 )
-from nemo.collections.tts.losses.tacotron2loss import Tacotron2Loss
-from nemo.collections.tts.models.base import SpectrogramGenerator
 from nemo.core.classes.common import PretrainedModelInfo, typecheck
 from nemo.core.neural_types.elements import (
     AudioSignal,
@@ -52,7 +53,7 @@ class Preprocessor:
 
 @dataclass
 class Tacotron2Config:
-    preprocessor: Preprocessor = Preprocessor()
+    preprocessor: Preprocessor = field(default_factory=lambda: Preprocessor())
     encoder: Dict[Any, Any] = MISSING
     decoder: Dict[Any, Any] = MISSING
     postnet: Dict[Any, Any] = MISSING
@@ -133,8 +134,6 @@ class Tacotron2Model(SpectrogramGenerator):
                 abbreviation_version="fastpitch",
                 make_table=False,
             )
-        elif ds_class_name == "AudioToCharWithPriorAndPitchDataset":
-            self.parser = self.vocab.encode
         else:
             raise ValueError("Wanted to setup parser, but model does not have necessary paramaters")
 
@@ -200,8 +199,15 @@ class Tacotron2Model(SpectrogramGenerator):
     def forward(self, *, tokens, token_len, audio=None, audio_len=None):
         if audio is not None and audio_len is not None:
             spec_target, spec_target_len = self.audio_to_melspec_precessor(audio, audio_len)
+        else:
+            if self.training or self.calculate_loss:
+                raise ValueError(
+                    f"'audio' and 'audio_len' can not be None when either 'self.training' or 'self.calculate_loss' is True."
+                )
+
         token_embedding = self.text_embedding(tokens).transpose(1, 2)
         encoder_embedding = self.encoder(token_embedding=token_embedding, token_len=token_len)
+
         if self.training:
             spec_pred_dec, gate_pred, alignments = self.decoder(
                 memory=encoder_embedding, decoder_inputs=spec_target, memory_lengths=token_len
@@ -210,10 +216,12 @@ class Tacotron2Model(SpectrogramGenerator):
             spec_pred_dec, gate_pred, alignments, pred_length = self.decoder(
                 memory=encoder_embedding, memory_lengths=token_len
             )
+
         spec_pred_postnet = self.postnet(mel_spec=spec_pred_dec)
 
-        if not self.calculate_loss:
+        if not self.calculate_loss and not self.training:
             return spec_pred_dec, spec_pred_postnet, gate_pred, alignments, pred_length
+
         return spec_pred_dec, spec_pred_postnet, gate_pred, spec_target, spec_target_len, alignments
 
     @typecheck(
@@ -272,7 +280,7 @@ class Tacotron2Model(SpectrogramGenerator):
             spec_target_len=spec_target_len,
             pad_value=self.pad_value,
         )
-        return {
+        loss = {
             "val_loss": loss,
             "mel_target": spec_target,
             "mel_postnet": spec_pred_postnet,
@@ -280,8 +288,10 @@ class Tacotron2Model(SpectrogramGenerator):
             "gate_target": gate_target,
             "alignments": alignments,
         }
+        self.validation_step_outputs.append(loss)
+        return loss
 
-    def validation_epoch_end(self, outputs):
+    def on_validation_epoch_end(self):
         if self.logger is not None and self.logger.experiment is not None:
             logger = self.logger.experiment
             for logger in self.trainer.loggers:
@@ -290,49 +300,53 @@ class Tacotron2Model(SpectrogramGenerator):
                     break
             if isinstance(logger, TensorBoardLogger):
                 tacotron2_log_to_tb_func(
-                    logger, outputs[0].values(), self.global_step, tag="val", log_images=True, add_audio=False,
+                    logger,
+                    self.validation_step_outputs[0].values(),
+                    self.global_step,
+                    tag="val",
+                    log_images=True,
+                    add_audio=False,
                 )
             elif isinstance(logger, WandbLogger):
                 tacotron2_log_to_wandb_func(
-                    logger, outputs[0].values(), self.global_step, tag="val", log_images=True, add_audio=False,
+                    logger,
+                    self.validation_step_outputs[0].values(),
+                    self.global_step,
+                    tag="val",
+                    log_images=True,
+                    add_audio=False,
                 )
-        avg_loss = torch.stack([x['val_loss'] for x in outputs]).mean()  # This reduces across batches, not workers!
+        avg_loss = torch.stack(
+            [x['val_loss'] for x in self.validation_step_outputs]
+        ).mean()  # This reduces across batches, not workers!
         self.log('val_loss', avg_loss)
-
-    def _setup_normalizer(self, cfg):
-        if "text_normalizer" in cfg:
-            normalizer_kwargs = {}
-
-            if "whitelist" in cfg.text_normalizer:
-                normalizer_kwargs["whitelist"] = self.register_artifact(
-                    'text_normalizer.whitelist', cfg.text_normalizer.whitelist
-                )
-
-            try:
-                self.normalizer = instantiate(cfg.text_normalizer, **normalizer_kwargs)
-            except Exception as e:
-                logging.error(e)
-                raise ImportError(
-                    "`pynini` not installed, please install via NeMo/nemo_text_processing/pynini_install.sh"
-                )
-
-            self.text_normalizer_call = self.normalizer.normalize
-            if "text_normalizer_call_kwargs" in cfg:
-                self.text_normalizer_call_kwargs = cfg.text_normalizer_call_kwargs
+        self.validation_step_outputs.clear()  # free memory
 
     def _setup_tokenizer(self, cfg):
         text_tokenizer_kwargs = {}
         if "g2p" in cfg.text_tokenizer and cfg.text_tokenizer.g2p is not None:
+            # for backward compatibility
+            if (
+                self._is_model_being_restored()
+                and (cfg.text_tokenizer.g2p.get('_target_', None) is not None)
+                and cfg.text_tokenizer.g2p["_target_"].startswith("nemo_text_processing.g2p")
+            ):
+                cfg.text_tokenizer.g2p["_target_"] = g2p_backward_compatible_support(
+                    cfg.text_tokenizer.g2p["_target_"]
+                )
+
             g2p_kwargs = {}
 
             if "phoneme_dict" in cfg.text_tokenizer.g2p:
                 g2p_kwargs["phoneme_dict"] = self.register_artifact(
-                    'text_tokenizer.g2p.phoneme_dict', cfg.text_tokenizer.g2p.phoneme_dict,
+                    'text_tokenizer.g2p.phoneme_dict',
+                    cfg.text_tokenizer.g2p.phoneme_dict,
                 )
 
             if "heteronyms" in cfg.text_tokenizer.g2p:
                 g2p_kwargs["heteronyms"] = self.register_artifact(
-                    'text_tokenizer.g2p.heteronyms', cfg.text_tokenizer.g2p.heteronyms,
+                    'text_tokenizer.g2p.heteronyms',
+                    cfg.text_tokenizer.g2p.heteronyms,
                 )
 
             text_tokenizer_kwargs["g2p"] = instantiate(cfg.text_tokenizer.g2p, **g2p_kwargs)

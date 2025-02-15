@@ -14,10 +14,10 @@
 
 import os
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
+from lightning.pytorch import seed_everything
 from omegaconf import OmegaConf
-from pytorch_lightning import seed_everything
 
 from nemo.collections.asr.models import EncDecSpeakerLabelModel
 from nemo.core.config import hydra_runner
@@ -58,7 +58,16 @@ def main(cfg):
     trainer = pl.Trainer(**cfg.trainer)
     log_dir = exp_manager(trainer, cfg.get("exp_manager", None))
     speaker_model = EncDecSpeakerLabelModel(cfg=cfg.model, trainer=trainer)
+
+    # save labels to file
+    if log_dir is not None:
+        with open(os.path.join(log_dir, 'labels.txt'), 'w') as f:
+            if speaker_model.labels is not None:
+                for label in speaker_model.labels:
+                    f.write(f'{label}\n')
+
     trainer.fit(speaker_model)
+
     if not trainer.fast_dev_run:
         model_path = os.path.join(log_dir, '..', 'spkr.nemo')
         speaker_model.save_to(model_path)

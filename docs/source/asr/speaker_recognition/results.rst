@@ -84,14 +84,14 @@ or you can run `batch_inference()` to perform inference on the manifest with sel
 .. code-block:: python
 
   speaker_model = nemo_asr.models.EncDecSpeakerLabelModel.from_pretrained(model_name="<pretrained_model_name or path/to/nemo/file>")
-  embs, logits, gt_labels, mapped_labels = speaker_model.batch_inference(manifest, batch_size=32)
+  embs, logits, gt_labels, trained_labels = speaker_model.batch_inference(manifest, batch_size=32)
 
 Speaker Verification Inference
 ------------------------------
 
 Speaker Verification is a task of verifying if two utterances are from the same speaker or not.
 
-We provide a helper function to verify the audio files and return True if two provided audio files are from the same speaker, False otherwise.
+We provide a helper function to verify the audio files (also in a batch) and return True if provided pair of audio files is from the same speaker, False otherwise.
 
 The audio files should be 16KHz mono channel wav files.
 
@@ -99,6 +99,12 @@ The audio files should be 16KHz mono channel wav files.
 
   speaker_model = EncDecSpeakerLabelModel.from_pretrained(model_name="titanet_large")
   decision = speaker_model.verify_speakers('path/to/one/audio_file','path/to/other/audio_file')
+  decisions = speaker_model.verify_speakers_batch([
+                                                  ('/path/to/audio_0_0', '/path/to/audio_0_1'),
+                                                  ('/path/to/audio_1_0', '/path/to/audio_1_1'),
+                                                  ('/path/to/audio_2_0', '/path/to/audio_2_1'),
+                                                  ('/path/to/audio_3_0', '/path/to/audio_3_1')
+                                                  ],  batch_size=4, device='cuda')
 
 
 NGC Pretrained Checkpoints

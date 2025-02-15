@@ -1,8 +1,12 @@
-Jinja2<3.1
+boto3
+Jinja2
 latexcodec
 numpy
-sphinx>=3.0
+pydata-sphinx-theme
+Sphinx
 sphinx-book-theme
 sphinx-copybutton
 sphinxcontrib-bibtex
+sphinxext-opengraph
+urllib3
 wrapt

@@ -18,13 +18,19 @@ import numpy as np
 import omegaconf
 import torch
 from hydra.utils import instantiate
+from lightning.pytorch import Trainer
+from lightning.pytorch.loggers import WandbLogger
 from omegaconf import DictConfig
-from pytorch_lightning import Trainer
-from pytorch_lightning.loggers import WandbLogger
 from torch import nn
 
-from nemo.collections.tts.helpers.helpers import binarize_attention, get_mask_from_lengths, plot_alignment_to_numpy
 from nemo.collections.tts.losses.aligner_loss import BinLoss, ForwardSumLoss
+from nemo.collections.tts.models.base import NeedsNormalizer
+from nemo.collections.tts.parts.utils.helpers import (
+    binarize_attention,
+    g2p_backward_compatible_support,
+    get_mask_from_lengths,
+    plot_alignment_to_numpy,
+)
 from nemo.core.classes import ModelPT
 from nemo.core.classes.common import PretrainedModelInfo
 from nemo.utils import logging, model_utils
@@ -36,7 +42,7 @@ except ModuleNotFoundError:
     HAVE_WANDB = False
 
 
-class AlignerModel(ModelPT):
+class AlignerModel(NeedsNormalizer, ModelPT):
     """Speech-to-text alignment model (https://arxiv.org/pdf/2108.10447.pdf) that is used to learn alignments between mel spectrogram and text."""
 
     def __init__(self, cfg: DictConfig, trainer: 'Trainer' = None):
@@ -72,40 +78,31 @@ class AlignerModel(ModelPT):
         self.bin_loss_start_ratio = cfg.bin_loss_start_ratio
         self.bin_loss_warmup_epochs = cfg.bin_loss_warmup_epochs
 
-    def _setup_normalizer(self, cfg):
-        if "text_normalizer" in cfg:
-            normalizer_kwargs = {}
-
-            if "whitelist" in cfg.text_normalizer:
-                normalizer_kwargs["whitelist"] = self.register_artifact(
-                    'text_normalizer.whitelist', cfg.text_normalizer.whitelist
-                )
-
-            try:
-                self.normalizer = instantiate(cfg.text_normalizer, **normalizer_kwargs)
-            except Exception as e:
-                logging.error(e)
-                raise ImportError(
-                    "`pynini` not installed, please install via NeMo/nemo_text_processing/pynini_install.sh"
-                )
-
-            self.text_normalizer_call = self.normalizer.normalize
-            if "text_normalizer_call_kwargs" in cfg:
-                self.text_normalizer_call_kwargs = cfg.text_normalizer_call_kwargs
-
     def _setup_tokenizer(self, cfg):
         text_tokenizer_kwargs = {}
         if "g2p" in cfg.text_tokenizer:
+            # for backward compatibility
+            if (
+                self._is_model_being_restored()
+                and (cfg.text_tokenizer.g2p.get('_target_', None) is not None)
+                and cfg.text_tokenizer.g2p["_target_"].startswith("nemo_text_processing.g2p")
+            ):
+                cfg.text_tokenizer.g2p["_target_"] = g2p_backward_compatible_support(
+                    cfg.text_tokenizer.g2p["_target_"]
+                )
+
             g2p_kwargs = {}
 
             if "phoneme_dict" in cfg.text_tokenizer.g2p:
                 g2p_kwargs["phoneme_dict"] = self.register_artifact(
-                    'text_tokenizer.g2p.phoneme_dict', cfg.text_tokenizer.g2p.phoneme_dict,
+                    'text_tokenizer.g2p.phoneme_dict',
+                    cfg.text_tokenizer.g2p.phoneme_dict,
                 )
 
             if "heteronyms" in cfg.text_tokenizer.g2p:
                 g2p_kwargs["heteronyms"] = self.register_artifact(
-                    'text_tokenizer.g2p.heteronyms', cfg.text_tokenizer.g2p.heteronyms,
+                    'text_tokenizer.g2p.heteronyms',
+                    cfg.text_tokenizer.g2p.heteronyms,
                 )
 
             text_tokenizer_kwargs["g2p"] = instantiate(cfg.text_tokenizer.g2p, **g2p_kwargs)
@@ -113,11 +110,11 @@ class AlignerModel(ModelPT):
         self.tokenizer = instantiate(cfg.text_tokenizer, **text_tokenizer_kwargs)
 
     def forward(self, *, spec, spec_len, text, text_len, attn_prior=None):
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast(self.device.type, enabled=False):
             attn_soft, attn_logprob = self.alignment_encoder(
                 queries=spec,
                 keys=self.embed(text).transpose(1, 2),
-                mask=get_mask_from_lengths(text_len).unsqueeze(-1),
+                mask=get_mask_from_lengths(text_len).unsqueeze(-1) == 0,
                 attn_prior=attn_prior,
             )
 
@@ -219,7 +216,9 @@ class AlignerModel(ModelPT):
             text_tokenizer=self.tokenizer,
         )
         return torch.utils.data.DataLoader(  # noqa
-            dataset=dataset, collate_fn=dataset.collate_fn, **cfg.dataloader_params,
+            dataset=dataset,
+            collate_fn=dataset.collate_fn,
+            **cfg.dataloader_params,
         )
 
     def setup_training_data(self, cfg):

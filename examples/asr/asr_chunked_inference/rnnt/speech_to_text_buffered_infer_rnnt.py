@@ -34,7 +34,9 @@ python speech_to_text_buffered_infer_rnnt.py \
     total_buffer_in_secs=4.0 \
     chunk_len_in_secs=1.6 \
     model_stride=4 \
-    batch_size=32
+    batch_size=32 \
+    clean_groundtruth_text=True \
+    langid='en'
 
 # Longer Common Subsequence (LCS) Merge algorithm
 
@@ -59,13 +61,16 @@ import copy
 import glob
 import math
 import os
-from dataclasses import dataclass, is_dataclass
+from dataclasses import dataclass
 from typing import Optional
 
-import pytorch_lightning as pl
+import lightning.pytorch as pl
 import torch
 from omegaconf import OmegaConf, open_dict
 
+from nemo.collections.asr.models import EncDecHybridRNNTCTCModel, EncDecRNNTModel
+from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConfig
+from nemo.collections.asr.parts.utils.eval_utils import cal_write_wer
 from nemo.collections.asr.parts.utils.streaming_utils import (
     BatchedFrameASRRNNT,
     LongestCommonSubsequenceBatchedFrameASRRNNT,
@@ -79,11 +84,13 @@ from nemo.collections.asr.parts.utils.transcribe_utils import (
 from nemo.core.config import hydra_runner
 from nemo.utils import logging
 
-can_gpu = torch.cuda.is_available()
-
 
 @dataclass
 class TranscriptionConfig:
+    """
+    Transcription Configuration for buffered inference.
+    """
+
     # Required configs
     model_path: Optional[str] = None  # Path to a .nemo file
     pretrained_name: Optional[str] = None  # Name of a pretrained model
@@ -98,10 +105,18 @@ class TranscriptionConfig:
     pred_name_postfix: Optional[str] = None  # If you need to use another model name, rather than standard one.
     random_seed: Optional[int] = None  # seed number going to be used in seed_everything()
 
+    # Set to True to output greedy timestamp information (only supported models)
+    compute_timestamps: bool = False
+
+    # Set to True to output language ID information
+    compute_langs: bool = False
+
     # Chunked configs
     chunk_len_in_secs: float = 1.6  # Chunk length in seconds
     total_buffer_in_secs: float = 4.0  # Length of buffer (chunk + left and right padding) in seconds
-    model_stride: int = 8  # Model downsampling factor, 8 for Citrinet models and 4 for Conformer models",
+    model_stride: int = (
+        8  # Model downsampling factor, 8 for Citrinet and FastConformer models and 4 for Conformer models.
+    )
 
     # Set `cuda` to int to define CUDA device. If 'None', will look for CUDA
     # device anyway, and do inference on CPU only if CUDA device is not found.
@@ -112,6 +127,9 @@ class TranscriptionConfig:
     # Recompute model transcription, even if the output folder exists with scores.
     overwrite_transcripts: bool = True
 
+    # Decoding strategy for RNNT models
+    decoding: RNNTDecodingConfig = RNNTDecodingConfig()
+
     # Decoding configs
     max_steps_per_timestep: int = 5  #'Maximum number of tokens decoded per acoustic timestep'
     stateful_decoding: bool = False  # Whether to perform stateful decoding
@@ -120,14 +138,23 @@ class TranscriptionConfig:
     merge_algo: Optional[str] = 'middle'  # choices=['middle', 'lcs'], choice of algorithm to apply during inference.
     lcs_alignment_dir: Optional[str] = None  # Path to a directory to store LCS algo alignments
 
+    # Config for word / character error rate calculation
+    calculate_wer: bool = True
+    clean_groundtruth_text: bool = False
+    langid: str = "en"  # specify this for convert_num_to_words step in groundtruth cleaning
+    use_cer: bool = False
+
 
 @hydra_runner(config_name="TranscriptionConfig", schema=TranscriptionConfig)
 def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
+    """
+    Transcribes the input audio and can be used to infer long audio files by chunking
+    them into smaller segments.
+    """
     logging.info(f'Hydra config: {OmegaConf.to_yaml(cfg)}')
     torch.set_grad_enabled(False)
 
-    if is_dataclass(cfg):
-        cfg = OmegaConf.structured(cfg)
+    cfg = OmegaConf.structured(cfg)
 
     if cfg.random_seed:
         pl.seed_everything(cfg.random_seed)
@@ -186,16 +213,27 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
     asr_model = asr_model.to(asr_model.device)
 
     # Change Decoding Config
-    decoding_cfg = asr_model.cfg.decoding
-    with open_dict(decoding_cfg):
+    with open_dict(cfg.decoding):
         if cfg.stateful_decoding:
-            decoding_cfg.strategy = "greedy"
+            cfg.decoding.strategy = "greedy"
         else:
-            decoding_cfg.strategy = "greedy_batch"
-        decoding_cfg.preserve_alignments = True  # required to compute the middle token for transducers.
-        decoding_cfg.fused_batch_size = -1  # temporarily stop fused batch during inference.
+            cfg.decoding.strategy = "greedy_batch"
+        cfg.decoding.preserve_alignments = True  # required to compute the middle token for transducers.
+        cfg.decoding.fused_batch_size = -1  # temporarily stop fused batch during inference.
+        cfg.decoding.beam.return_best_hypothesis = True  # return and write the best hypothsis only
 
-    asr_model.change_decoding_strategy(decoding_cfg)
+    # Setup decoding strategy
+    if hasattr(asr_model, 'change_decoding_strategy'):
+        if not isinstance(asr_model, EncDecRNNTModel) and not isinstance(asr_model, EncDecHybridRNNTCTCModel):
+            raise ValueError("The script supports rnnt model and hybrid model with rnnt decodng!")
+        else:
+            # rnnt model
+            if isinstance(asr_model, EncDecRNNTModel):
+                asr_model.change_decoding_strategy(cfg.decoding)
+
+            # hybrid ctc rnnt model with decoder_type = rnnt
+            if hasattr(asr_model, 'cur_decoder'):
+                asr_model.change_decoding_strategy(cfg.decoding, decoder_type='rnnt')
 
     feature_stride = model_cfg.preprocessor['window_stride']
     model_stride_in_secs = feature_stride * cfg.model_stride
@@ -240,12 +278,26 @@ def main(cfg: TranscriptionConfig) -> TranscriptionConfig:
         batch_size=cfg.batch_size,
         manifest=manifest,
         filepaths=filepaths,
+        accelerator=accelerator,
     )
 
-    output_filename = write_transcription(
-        hyps, cfg, model_name, filepaths=filepaths, compute_langs=False, compute_timestamps=False
+    output_filename, pred_text_attr_name = write_transcription(
+        hyps, cfg, model_name, filepaths=filepaths, compute_langs=False, timestamps=False
     )
     logging.info(f"Finished writing predictions to {output_filename}!")
+
+    if cfg.calculate_wer:
+        output_manifest_w_wer, total_res, _ = cal_write_wer(
+            pred_manifest=output_filename,
+            pred_text_attr_name=pred_text_attr_name,
+            clean_groundtruth_text=cfg.clean_groundtruth_text,
+            langid=cfg.langid,
+            use_cer=cfg.use_cer,
+            output_filename=None,
+        )
+        if output_manifest_w_wer:
+            logging.info(f"Writing prediction and error rate of each sample to {output_manifest_w_wer}!")
+            logging.info(f"{total_res}")
 
     return cfg
 

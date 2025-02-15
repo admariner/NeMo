@@ -22,16 +22,14 @@ from unittest.mock import Mock, patch
 import pytest
 import torch
 
-from nemo.collections.asr.metrics.rnnt_wer import RNNTWER
-from nemo.collections.asr.metrics.rnnt_wer_bpe import RNNTBPEWER
-from nemo.collections.asr.metrics.wer import (
-    WER,
+from nemo.collections.asr.metrics.wer import WER, word_error_rate, word_error_rate_detail, word_error_rate_per_utt
+from nemo.collections.asr.parts.submodules.ctc_decoding import (
+    CTCBPEDecoding,
+    CTCBPEDecodingConfig,
     CTCDecoding,
     CTCDecodingConfig,
-    word_error_rate,
-    word_error_rate_detail,
 )
-from nemo.collections.asr.metrics.wer_bpe import WERBPE, CTCBPEDecoding, CTCBPEDecodingConfig
+from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTBPEDecoding, RNNTDecoding
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
 from nemo.collections.common.tokenizers import CharTokenizer
 from nemo.utils.config_utils import assert_dataclass_signature_match
@@ -94,7 +92,12 @@ class TestWordErrorRate:
         if wer.batch_dim_index > 0:
             targets_tensor.transpose_(0, 1)
             predictions_tensor.transpose_(0, 1)
-        wer(predictions=predictions_tensor, targets=targets_tensor, target_lengths=torch.tensor([len(reference)]))
+        wer(
+            predictions=predictions_tensor,
+            predictions_lengths=None,
+            targets=targets_tensor,
+            targets_lengths=torch.tensor([len(reference)]),
+        )
         res, _, _ = wer.compute()
         res = res.detach().cpu()
         # return res[0] / res[1]
@@ -123,7 +126,13 @@ class TestWordErrorRate:
             float("inf"),
             float("inf"),
         )
-        assert word_error_rate_detail(hypotheses=['cat', ''], references=['', 'gpu']) == (2.0, 1, 1.0, 1.0, 0.0,)
+        assert word_error_rate_detail(hypotheses=['cat', ''], references=['', 'gpu']) == (
+            2.0,
+            1,
+            1.0,
+            1.0,
+            0.0,
+        )
         assert word_error_rate_detail(hypotheses=['cat'], references=['cot']) == (1.0, 1, 0.0, 0.0, 1.0)
         assert word_error_rate_detail(hypotheses=['G P U'], references=['GPU']) == (3.0, 1, 2.0, 0.0, 1.0)
         assert word_error_rate_detail(hypotheses=[''], references=['ducuti motorcycle'], use_cer=True) == (
@@ -133,6 +142,15 @@ class TestWordErrorRate:
             1.0,
             0.0,
         )
+
+        assert word_error_rate_per_utt(hypotheses=['kat'], references=['cat']) == ([1.0], 1.0)
+        assert word_error_rate_per_utt(hypotheses=['cat', ''], references=['', 'gpu']) == ([float("inf"), 1.0], 2.0)
+        assert word_error_rate_per_utt(
+            hypotheses=['ducuti motorcycle', 'G P U'], references=['ducati motorcycle', 'GPU']
+        ) == ([0.5, 3.0], 4 / 3)
+        assert word_error_rate_per_utt(
+            hypotheses=['ducuti motorcycle', 'G P U'], references=['ducati motorcycle', 'GPU'], use_cer=True
+        ) == ([1 / 17, 2 / 3], 0.15)
 
     @pytest.mark.unit
     @pytest.mark.parametrize("batch_dim_index", [0, 1])
@@ -174,7 +192,7 @@ class TestWordErrorRate:
         decoding_config = {'strategy': 'greedy'}
         if test_wer_bpe:
             decoding = CTCBPEDecoding(decoding_config, self.char_tokenizer)
-            wer = WERBPE(decoding, use_cer=False)
+            wer = WER(decoding, use_cer=False)
         else:
             decoding = CTCDecoding(decoding_config, self.vocabulary.copy())
             wer = WER(decoding, use_cer=False)
@@ -201,7 +219,7 @@ class TestWordErrorRate:
 
         # pass batchsize 1 tensor, get back list of length 1 Hypothesis
         wer.decoding.preserve_alignments = True
-        hyp, _ = wer.decoding.ctc_decoder_predictions_tensor(tensor, return_hypotheses=True)
+        hyp = wer.decoding.ctc_decoder_predictions_tensor(tensor, return_hypotheses=True)
         hyp = hyp[0]
         assert isinstance(hyp, Hypothesis)
 
@@ -215,7 +233,7 @@ class TestWordErrorRate:
         length = torch.tensor([tensor.shape[1 - batch_dim_index]], dtype=torch.long)
 
         # pass batchsize 1 tensor, get back list of length 1 Hypothesis [add length info]
-        hyp, _ = wer.decoding.ctc_decoder_predictions_tensor(tensor, decoder_lengths=length, return_hypotheses=True)
+        hyp = wer.decoding.ctc_decoder_predictions_tensor(tensor, decoder_lengths=length, return_hypotheses=True)
         hyp = hyp[0]
         assert isinstance(hyp, Hypothesis)
         assert hyp.length == 3
@@ -225,7 +243,7 @@ class TestWordErrorRate:
     @pytest.mark.parametrize("test_wer_bpe", [False, True])
     def test_wer_metric_subword_return_hypothesis(self, batch_dim_index, test_wer_bpe):
         decoding_config = {'strategy': 'greedy', 'batch_dim_index': batch_dim_index}
-        wer = WERBPE(CTCBPEDecoding(decoding_config, self.char_tokenizer), use_cer=False)
+        wer = WER(CTCBPEDecoding(decoding_config, self.char_tokenizer), use_cer=False)
 
         tensor = self.__string_to_ctc_tensor('cat', test_wer_bpe, as_logprobs=True).int()
         if batch_dim_index > 0:
@@ -233,7 +251,7 @@ class TestWordErrorRate:
 
         # pass batchsize 1 tensor, get back list of length 1 Hypothesis
         wer.decoding.preserve_alignments = True
-        hyp, _ = wer.decoding.ctc_decoder_predictions_tensor(tensor, return_hypotheses=True)
+        hyp = wer.decoding.ctc_decoder_predictions_tensor(tensor, return_hypotheses=True)
         hyp = hyp[0]
         assert isinstance(hyp, Hypothesis)
 
@@ -247,27 +265,31 @@ class TestWordErrorRate:
         length = torch.tensor([tensor.shape[1 - batch_dim_index]], dtype=torch.long)
 
         # pass batchsize 1 tensor, get back list of length 1 Hypothesis [add length info]
-        hyp, _ = wer.decoding.ctc_decoder_predictions_tensor(tensor, decoder_lengths=length, return_hypotheses=True)
+        hyp = wer.decoding.ctc_decoder_predictions_tensor(tensor, decoder_lengths=length, return_hypotheses=True)
         hyp = hyp[0]
         assert isinstance(hyp, Hypothesis)
         assert hyp.length == 3
 
     def get_wer_ctc(self, prediction: str, reference: str, test_wer_bpe: bool):
-        ctc_decoder_predictions_tensor_mock = Mock(return_value=([prediction], None))
+        ctc_decoder_predictions_tensor_mock = Mock(
+            return_value=[Hypothesis(score=1.0, y_sequence=[], text=prediction)]
+        )
         if test_wer_bpe:
             decoding = Mock(
                 blank_id=self.char_tokenizer.tokenizer.vocab_size,
                 tokenizer=deepcopy(self.char_tokenizer),
                 ctc_decoder_predictions_tensor=ctc_decoder_predictions_tensor_mock,
                 decode_tokens_to_str=self.char_tokenizer.ids_to_text,
+                spec=CTCBPEDecoding,
             )
-            wer = WERBPE(decoding, use_cer=False)
+            wer = WER(decoding, use_cer=False)
         else:
             decoding = Mock(
                 blank_id=len(self.vocabulary),
                 labels_map=self.vocabulary.copy(),
                 ctc_decoder_predictions_tensor=ctc_decoder_predictions_tensor_mock,
                 decode_tokens_to_str=self.decode_token_to_str_with_vocabulary_mock,
+                spec=CTCDecoding,
             )
             wer = WER(decoding, use_cer=False)
         targets_tensor = self.__reference_string_to_tensor(reference, test_wer_bpe)
@@ -276,7 +298,7 @@ class TestWordErrorRate:
             predictions=None,
             predictions_lengths=None,
             targets=targets_tensor,
-            target_lengths=torch.tensor([len(reference)]),
+            targets_lengths=torch.tensor([len(reference)]),
         )
         res, _, _ = wer.compute()
         res = res.detach().cpu()
@@ -287,31 +309,35 @@ class TestWordErrorRate:
         return ''.join([self.vocabulary[id_] for id_ in ids])
 
     def get_wer_rnnt(self, prediction: str, reference: str, batch_dim_index: int, test_wer_bpe: bool):
-        rnnt_decoder_predictions_tensor_mock = Mock(return_value=([prediction], None))
+        rnnt_decoder_predictions_tensor_mock = Mock(
+            return_value=[Hypothesis(score=1.0, y_sequence=[], text=prediction)]
+        )
         if test_wer_bpe:
             decoding = Mock(
                 blank_id=self.char_tokenizer.tokenizer.vocab_size,
                 tokenizer=deepcopy(self.char_tokenizer),
                 rnnt_decoder_predictions_tensor=rnnt_decoder_predictions_tensor_mock,
                 decode_tokens_to_str=self.char_tokenizer.ids_to_text,
+                spec=RNNTBPEDecoding,
             )
-            wer = RNNTBPEWER(decoding, batch_dim_index=batch_dim_index, use_cer=False)
+            wer = WER(decoding, batch_dim_index=batch_dim_index, use_cer=False)
         else:
             decoding = Mock(
                 blank_id=len(self.vocabulary),
                 labels_map=self.vocabulary.copy(),
                 rnnt_decoder_predictions_tensor=rnnt_decoder_predictions_tensor_mock,
                 decode_tokens_to_str=self.decode_token_to_str_with_vocabulary_mock,
+                spec=RNNTDecoding,
             )
-            wer = RNNTWER(decoding, batch_dim_index=batch_dim_index, use_cer=False)
+            wer = WER(decoding, batch_dim_index=batch_dim_index, use_cer=False)
         targets_tensor = self.__reference_string_to_tensor(reference, test_wer_bpe)
         if wer.batch_dim_index > 0:
             targets_tensor.transpose_(0, 1)
         wer(
-            encoder_output=None,
-            encoded_lengths=None,
+            predictions=None,
+            predictions_lengths=None,
             targets=targets_tensor,
-            target_lengths=torch.tensor([len(reference)]),
+            targets_lengths=torch.tensor([len(reference)]),
         )
         res, _, _ = wer.compute()
         res = res.detach().cpu()
@@ -363,24 +389,24 @@ class TestWordErrorRate:
         decoding_cfg = CTCDecodingConfig()
         decoding = CTCDecoding(decoding_cfg, vocabulary=self.vocabulary)
 
-        hyp, _ = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
+        hyp = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
         hyp = hyp[0]  # type: Hypothesis
         assert isinstance(hyp.y_sequence, torch.Tensor)
         assert hyp.length == torch.tensor(T, dtype=torch.int32)
         assert hyp.text != ''
-        assert len(hyp.timestep) == 0
+        assert len(hyp.timestamp) == 0
         assert hyp.alignments is None
 
         # Preserve timestamps and alignments
         decoding_cfg = CTCDecodingConfig(preserve_alignments=True, compute_timestamps=True)
         decoding = CTCDecoding(decoding_cfg, vocabulary=self.vocabulary)
 
-        hyp, _ = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
+        hyp = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
         hyp = hyp[0]  # type: Hypothesis
         assert isinstance(hyp.y_sequence, torch.Tensor)
         assert hyp.length == torch.tensor(T, dtype=torch.int32)
         assert hyp.text != ''
-        assert len(hyp.timestep) == 3
+        assert len(hyp.timestamp) == 4
         assert hyp.alignments is not None
 
     @pytest.mark.unit
@@ -394,24 +420,24 @@ class TestWordErrorRate:
         decoding_cfg = CTCBPEDecodingConfig()
         decoding = CTCBPEDecoding(decoding_cfg, tokenizer=self.char_tokenizer)
 
-        hyp, _ = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
+        hyp = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
         hyp = hyp[0]  # type: Hypothesis
         assert isinstance(hyp.y_sequence, torch.Tensor)
         assert hyp.length == torch.tensor(T, dtype=torch.int32)
         assert hyp.text != ''
-        assert len(hyp.timestep) == 0
+        assert len(hyp.timestamp) == 0
         assert hyp.alignments is None
 
         # Preserve timestamps and alignments
         decoding_cfg = CTCBPEDecodingConfig(preserve_alignments=True, compute_timestamps=True)
         decoding = CTCBPEDecoding(decoding_cfg, tokenizer=self.char_tokenizer)
 
-        hyp, _ = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
+        hyp = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
         hyp = hyp[0]  # type: Hypothesis
         assert isinstance(hyp.y_sequence, torch.Tensor)
         assert hyp.length == torch.tensor(T, dtype=torch.int32)
         assert hyp.text != ''
-        assert len(hyp.timestep) == 3
+        assert len(hyp.timestamp) == 4
         assert hyp.alignments is not None
 
     @pytest.mark.unit
@@ -425,12 +451,12 @@ class TestWordErrorRate:
         decoding_cfg = CTCDecodingConfig()
         decoding = CTCDecoding(decoding_cfg, vocabulary=self.vocabulary)
 
-        hyp, _ = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
+        hyp = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
         hyp = hyp[0]  # type: Hypothesis
         assert isinstance(hyp.y_sequence, torch.Tensor)
         assert hyp.length == torch.tensor(T, dtype=torch.int32)
         assert hyp.text != ''
-        assert len(hyp.timestep) == 0
+        assert len(hyp.timestamp) == 0
         assert hyp.alignments is None
 
         # Preserve timestamps and alignments
@@ -439,18 +465,18 @@ class TestWordErrorRate:
 
         # Cannot compute alignments from labels
         with pytest.raises(ValueError):
-            hyp, _ = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
+            _ = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
 
         # Preserve timestamps
         decoding_cfg = CTCDecodingConfig(preserve_alignments=False, compute_timestamps=True)
         decoding = CTCDecoding(decoding_cfg, vocabulary=self.vocabulary)
 
-        hyp, _ = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
+        hyp = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
         hyp = hyp[0]  # type: Hypothesis
         assert isinstance(hyp.y_sequence, torch.Tensor)
         assert hyp.length == torch.tensor(T, dtype=torch.int32)
         assert hyp.text != ''
-        assert len(hyp.timestep) == 3
+        assert len(hyp.timestamp) == 4
         assert hyp.alignments is None
 
     @pytest.mark.unit
@@ -464,24 +490,24 @@ class TestWordErrorRate:
         decoding_cfg = CTCBPEDecodingConfig()
         decoding = CTCBPEDecoding(decoding_cfg, tokenizer=self.char_tokenizer)
 
-        hyp, _ = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
+        hyp = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
         hyp = hyp[0]  # type: Hypothesis
         assert isinstance(hyp.y_sequence, torch.Tensor)
         assert hyp.length == torch.tensor(T, dtype=torch.int32)
         assert hyp.text != ''
-        assert len(hyp.timestep) == 0
+        assert len(hyp.timestamp) == 0
         assert hyp.alignments is None
 
         # Preserve timestamps and alignments
         decoding_cfg = CTCBPEDecodingConfig(preserve_alignments=True, compute_timestamps=True)
         decoding = CTCBPEDecoding(decoding_cfg, tokenizer=self.char_tokenizer)
 
-        hyp, _ = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
+        hyp = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
         hyp = hyp[0]  # type: Hypothesis
         assert isinstance(hyp.y_sequence, torch.Tensor)
         assert hyp.length == torch.tensor(T, dtype=torch.int32)
         assert hyp.text != ''
-        assert len(hyp.timestep) == 3
+        assert len(hyp.timestamp) == 4
         assert hyp.alignments is not None
 
     @pytest.mark.unit
@@ -495,12 +521,12 @@ class TestWordErrorRate:
         decoding_cfg = CTCBPEDecodingConfig()
         decoding = CTCBPEDecoding(decoding_cfg, tokenizer=self.char_tokenizer)
 
-        hyp, _ = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
+        hyp = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
         hyp = hyp[0]  # type: Hypothesis
         assert isinstance(hyp.y_sequence, torch.Tensor)
         assert hyp.length == torch.tensor(T, dtype=torch.int32)
         assert hyp.text != ''
-        assert len(hyp.timestep) == 0
+        assert len(hyp.timestamp) == 0
         assert hyp.alignments is None
 
         # Preserve timestamps and alignments
@@ -509,16 +535,16 @@ class TestWordErrorRate:
 
         # Cannot compute alignments from labels
         with pytest.raises(ValueError):
-            hyp, _ = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
+            _ = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
 
         # Preserve timestamps
         decoding_cfg = CTCBPEDecodingConfig(preserve_alignments=False, compute_timestamps=True)
         decoding = CTCBPEDecoding(decoding_cfg, tokenizer=self.char_tokenizer)
 
-        hyp, _ = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
+        hyp = decoding.ctc_decoder_predictions_tensor(decoder_outputs, decoder_lens, return_hypotheses=True)
         hyp = hyp[0]  # type: Hypothesis
         assert isinstance(hyp.y_sequence, torch.Tensor)
         assert hyp.length == torch.tensor(T, dtype=torch.int32)
         assert hyp.text != ''
-        assert len(hyp.timestep) == 3
+        assert len(hyp.timestamp) == 4
         assert hyp.alignments is None

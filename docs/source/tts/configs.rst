@@ -16,14 +16,16 @@ Dataset Configuration
 
 Training, validation, and test parameters are specified using the ``model.train_ds``, ``model.validation_ds``, and ``model.test_ds`` sections in the configuration file, respectively. Depending on the task, there may be arguments specifying the sample rate of the audio files, supplementary data such as speech/text alignment priors and speaker IDs, etc., the threshold to trim leading and trailing silence from an audio signal, pitch normalization parameters, and so on. You may also decide to leave fields such as the ``manifest_filepath`` blank, to be specified via the command-line at runtime.
 
-Any initialization parameter that is accepted for the class `nemo.collections.tts.torch.data.TTSDataset <https://github.com/NVIDIA/NeMo/tree/stable/nemo/collections/tts/torch/data.py#L78>`_  can be set in the config file. Refer to the `Dataset Processing Classes <./api.html#Datasets>`__ section of the API for a list of datasets classes and their respective parameters. An example TTS train and validation configuration should look similar to the following:
+Any initialization parameter that is accepted for the class `nemo.collections.tts.data.dataset.TTSDataset
+<https://github.com/NVIDIA/NeMo/tree/stable/nemo/collections/tts/data/dataset.py#L80>`_  can be set in the config
+file. Refer to the `Dataset Processing Classes <./api.html#Datasets>`__ section of the API for a list of datasets classes and their respective parameters. An example TTS train and validation configuration should look similar to the following:
 
 .. code-block:: yaml
 
   model:
     train_ds:
       dataset:
-        _target_: nemo.collections.tts.torch.data.TTSDataset
+        _target_: nemo.collections.tts.data.dataset.TTSDataset
         manifest_filepath: ???
         sample_rate: 44100
         sup_data_path: ???
@@ -96,7 +98,6 @@ Text normalization (TN) converts text from written form into its verbalized form
       _target_: nemo_text_processing.text_normalization.normalize.Normalizer
       lang: en
       input_case: cased
-      whitelist: "nemo_text_processing/text_normalization/en/data/whitelist/lj_speech.tsv"
 
     text_normalizer_call_kwargs:
       verbose: false
@@ -105,7 +106,7 @@ Text normalization (TN) converts text from written form into its verbalized form
 
 Tokenizer Configuration
 ------------------------
-Tokenization converts input text string to a list of integer tokens. It may pad leading and/or trailing whitespaces to a string. NeMo tokenizer supports grapheme-only inputs, phoneme-only inputs, or a mixer of grapheme and phoneme inputs to disambiguate pronunciations of heteronyms for English, German, and Spanish. It also utilizes a grapheme-to-phoneme (G2P) tool to transliterate out-of-vocabulary (OOV) words. Please refer to the Section :doc:`../text_processing/g2p/g2p` and `TTS tokenizer collection <https://github.com/NVIDIA/NeMo/tree/stable/nemo/collections/common/tokenizers/text_to_speech/tts_tokenizers.py>`_ for more details. Note that G2P integration to NeMo TTS tokenizers pipeline is upcoming soon. The following example sets up a ``EnglishPhonemesTokenizer`` with a mixer of grapheme and phoneme inputs where each word shown in the heteronym list is transliterated into graphemes or phonemes by a 50% chance.
+Tokenization converts input text string to a list of integer tokens. It may pad leading and/or trailing whitespaces to a string. NeMo tokenizer supports grapheme-only inputs, phoneme-only inputs, or a mixer of grapheme and phoneme inputs to disambiguate pronunciations of heteronyms for English, German, and Spanish. It also utilizes a grapheme-to-phoneme (G2P) tool to transliterate out-of-vocabulary (OOV) words. Please refer to the :doc:`G2P section <./g2p>` and `TTS tokenizer collection <https://github.com/NVIDIA/NeMo/tree/stable/nemo/collections/common/tokenizers/text_to_speech/tts_tokenizers.py>`_ for more details. Note that G2P integration to NeMo TTS tokenizers pipeline is upcoming soon. The following example sets up a ``EnglishPhonemesTokenizer`` with a mixer of grapheme and phoneme inputs where each word shown in the heteronym list is transliterated into graphemes or phonemes by a 50% chance.
 
 .. code-block:: yaml
 
@@ -118,7 +119,7 @@ Tokenization converts input text string to a list of integer tokens. It may pad 
       apostrophe: true
       pad_with_space: true
       g2p:
-        _target_: nemo_text_processing.g2p.modules.EnglishG2p
+        _target_: nemo.collections.tts.g2p.models.en_us_arpabet.EnglishG2p
         phoneme_dict: ${phoneme_dict_path}
         heteronyms: ${heteronyms_path}
       phoneme_probability: 0.5

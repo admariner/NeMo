@@ -35,8 +35,8 @@ except (ImportError, ModuleNotFoundError):
 class ExportFormat(Enum):
     """Which format to use when exporting a Neural Module for deployment"""
 
-    ONNX = (1,)
-    TORCHSCRIPT = (2,)
+    ONNX = 1
+    TORCHSCRIPT = 2
 
 
 _EXT_DICT = {
@@ -46,6 +46,25 @@ _EXT_DICT = {
 }
 
 
+class TorchRMSNorm(nn.Module):
+    def __init__(self, weight, eps=1e-6):
+        """
+        LayerNorm without bias
+        """
+        super().__init__()
+        self.weight = weight
+        self.variance_epsilon = eps
+
+    def forward(self, hidden_states):
+        # can be only calculated with precision=32
+        variance = hidden_states.to(torch.float32).pow(2).mean(-1, keepdim=True)
+        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+        if self.weight.dtype in [torch.float16, torch.bfloat16]:
+            hidden_states = hidden_states.to(self.weight.dtype)
+
+        return self.weight * hidden_states
+
+
 class LinearWithBiasSkip(nn.Module):
     def __init__(self, weight, bias, skip_bias_add):
         super(LinearWithBiasSkip, self).__init__()
@@ -53,10 +72,12 @@ class LinearWithBiasSkip(nn.Module):
         self.weight = weight
         self.skip_bias_add = skip_bias_add
 
-    def forward(self, x):
+    def forward(self, x, weight=None):
+        if weight is None:
+            weight = self.weight
         if self.skip_bias_add:
-            return F.linear(x, self.weight), self.bias
-        return F.linear(x, self.weight, self.bias), None
+            return F.linear(x, weight), self.bias
+        return F.linear(x, weight, self.bias), None
 
 
 def get_export_format(filename: str):
@@ -107,12 +128,18 @@ def parse_input_example(input_example):
 
 def to_onnxrt_input(ort_input_names, input_names, input_dict, input_list):
     odict = {}
+    if not input_names:
+        input_list.extend(input_dict.values())
+        for k, v in zip(ort_input_names, input_list):
+            odict[k] = v.cpu().numpy()
+        return odict
     for k in reversed(input_names):
+        val = None
         if k in input_dict:
             val = input_dict[k].cpu().numpy()
-        else:
+        elif len(input_list) > 0:
             val = input_list.pop().cpu().numpy()
-        if k in ort_input_names:
+        if k in ort_input_names and val is not None:
             odict[k] = val
     return odict
 
@@ -122,7 +149,7 @@ def verify_torchscript(model, output, input_examples, check_tolerance=0.01):
     for input_example in input_examples:
         input_list, input_dict = parse_input_example(input_example)
         # We disable autocast here to make sure exported TS will run under Triton or other C++ env
-        with torch.cuda.amp.autocast(enabled=False):
+        with torch.amp.autocast('cuda', enabled=False):
             output_example = model.forward(*input_list, **input_dict)
             ts_model = torch.jit.load(output)
             all_good = all_good and run_ts_and_compare(
@@ -152,6 +179,8 @@ def verify_runtime(model, output, input_examples, input_names, check_tolerance=0
     for input_example in input_examples:
         input_list, input_dict = parse_input_example(input_example)
         output_example = model.forward(*input_list, **input_dict)
+        if not isinstance(output_example, tuple):
+            output_example = (output_example,)
         ort_input = to_onnxrt_input(ort_input_names, input_names, input_dict, input_list)
         all_good = all_good and run_ort_and_compare(sess, ort_input, output_example, check_tolerance)
     status = "SUCCESS" if all_good else "FAIL"
@@ -196,10 +225,12 @@ def run_ort_and_compare(sess, ort_input, output_example, check_tolerance=0.01):
             try:
                 if not torch.allclose(tout, expected.cpu(), rtol=check_tolerance, atol=100 * check_tolerance):
                     this_good = False
-            except Exception:  # there may ne size mismatch and it may be OK
+            except Exception:  # there may be size mismatch and it may be OK
                 this_good = False
             if not this_good:
-                logging.info(f"onnxruntime results mismatch! PyTorch(expected):\n{expected}\nONNXruntime:\n{tout}")
+                logging.info(
+                    f"onnxruntime results mismatch! PyTorch(expected, {expected.shape}):\n{expected}\nONNXruntime, {tout.shape}:\n{tout}"
+                )
                 all_good = False
     return all_good
 
@@ -207,10 +238,12 @@ def run_ort_and_compare(sess, ort_input, output_example, check_tolerance=0.01):
 apex_available = True
 
 try:
-    from apex.normalization.fused_layer_norm import FusedLayerNorm, MixedFusedLayerNorm
     from apex.contrib.layer_norm.layer_norm import FastLayerNorm
-    from apex.transformer.tensor_parallel.layers import RowParallelLinear, ColumnParallelLinear
-    from apex.transformer.functional.fused_softmax import FusedScaleMaskSoftmax
+    from apex.normalization import MixedFusedRMSNorm
+    from apex.normalization.fused_layer_norm import FusedLayerNorm, MixedFusedLayerNorm
+    from megatron.core.fusions.fused_layer_norm import FusedLayerNorm as MCoreFusedLayerNorm
+    from megatron.core.fusions.fused_softmax import FusedScaleMaskSoftmax
+    from megatron.core.tensor_parallel.layers import ColumnParallelLinear, RowParallelLinear
 
     def replace_FusedLayerNorm(n: nn.Module) -> Optional[nn.LayerNorm]:
         """
@@ -222,34 +255,39 @@ try:
         """
 
         p = next(n.parameters())
+
         if isinstance(n, FusedLayerNorm) or isinstance(n, MixedFusedLayerNorm):
             shape, eps, affine = n.normalized_shape, n.eps, n.elementwise_affine
+        elif isinstance(n, MCoreFusedLayerNorm):
+            shape, eps, affine = n.weight.shape, n.eps, True
         elif isinstance(n, FastLayerNorm):
             shape, eps, affine = n.weight.shape, n.epsilon, True
         else:
             return None
 
-        mod = nn.LayerNorm(shape, eps=eps, elementwise_affine=affine, device=p.device, dtype=p.dtype)
         n_state = n.state_dict()
-        mod.load_state_dict(n_state)
+        mod = nn.LayerNorm(shape, eps=eps, elementwise_affine=affine, device=p.device, dtype=p.dtype)
+
+        mod.load_state_dict(n_state, strict=True)
+
         return mod
 
-    def replace_RowParallelLinear(n: nn.Module) -> Optional[nn.Linear]:
+    def replace_MixedFusedRMSNorm(n: nn.Module):
         """
-        Replaces Apex's FusedLayerNorm with nn.LayerNorm. This is required for ONNX export.
+        Replaces Apex's MixedFusedRMSNorm with equivalent Pytorch layer. This is required for ONNX export.
         Args:
-           n: the FusedLayerNorm pytorch module to replace
+           n: the MixedFusedRMSNorm pytorch module to replace
         Returns:
-           Equivalent LayerNorm module
+           Equivalent module
         """
-        if not isinstance(n, RowParallelLinear):
-            raise ValueError("This function can only change the RowParallelLinear module.")
 
-        dev = next(n.parameters()).device
-        mod = LinearWithBiasSkip(n.weight, n.bias, n.skip_bias_add).to(device=dev)
+        p = next(n.parameters())
 
-        n_state = n.state_dict()
-        mod.load_state_dict(n_state)
+        if isinstance(n, MixedFusedRMSNorm):
+            mod = TorchRMSNorm(n.state_dict()['weight'], n.eps).to(p.device)
+        else:
+            return None
+
         return mod
 
     def replace_ParallelLinear(n: nn.Module) -> Optional[nn.Linear]:
@@ -267,7 +305,7 @@ try:
         mod = LinearWithBiasSkip(n.weight, n.bias, n.skip_bias_add).to(dev)
 
         n_state = n.state_dict()
-        mod.load_state_dict(n_state)
+        mod.load_state_dict(n_state, strict=False)
         return mod
 
     def replace_FusedScaleMaskSoftmax(n: nn.Module) -> Optional[nn.Linear]:
@@ -279,7 +317,8 @@ try:
            Equivalent LayerNorm module
         """
         if not isinstance(n, FusedScaleMaskSoftmax):
-            raise ValueError("This function can only change the FusedScaleMaskSoftmax module.")
+            logging.warning(f"This function can only change the FusedScaleMaskSoftmax module, got: {n.__class__}")
+            return n
 
         # disable the fusion only
         mod = FusedScaleMaskSoftmax(
@@ -291,10 +330,12 @@ try:
     default_Apex_replacements = {
         "FusedLayerNorm": replace_FusedLayerNorm,
         "MixedFusedLayerNorm": replace_FusedLayerNorm,
+        "MCoreFusedLayerNorm": replace_FusedLayerNorm,
         "FastLayerNorm": replace_FusedLayerNorm,
         "RowParallelLinear": replace_ParallelLinear,
         "ColumnParallelLinear": replace_ParallelLinear,
         "FusedScaleMaskSoftmax": replace_FusedScaleMaskSoftmax,
+        "MixedFusedRMSNorm": replace_MixedFusedRMSNorm,
     }
 
 except Exception as e:
@@ -342,7 +383,7 @@ def replace_MatchedScaleMaskSoftmax(n: nn.Module) -> Optional[nn.Linear]:
 
 def wrap_module(BaseT: Type[nn.Module], DestT: Type[nn.Module]) -> Callable[[nn.Module], Optional[nn.Module]]:
     """
-    Generic function generator to replace BaseT module with DestT wrapper. 
+    Generic function generator to replace BaseT module with DestT wrapper.
     Args:
         BaseT : module type to replace
         DestT : destination module type
@@ -409,22 +450,14 @@ script_replacements = {}
 
 def replace_for_export(model: nn.Module) -> nn.Module:
     """
-    Top-level function to replace default set of modules in model
+    Top-level function to replace 'default set' of modules in model, called from _prepare_for_export.
     NOTE: This occurs in place, if you want to preserve model then make sure to copy it first.
     Args:
         model : top level module
-        replace_1D_2D : include 1D -> 2D replacements
     Returns:
         model, possibly modified in-place
     """
-    from nemo.collections.tts.modules.submodules import MaskedInstanceNorm1d
-
     default_replacements = {
-        "BatchNorm1d": wrap_module(nn.BatchNorm1d, CastToFloat),
-        "BatchNorm2d": wrap_module(nn.BatchNorm2d, CastToFloat),
-        "LayerNorm": wrap_module(nn.LayerNorm, CastToFloat),
-        "InstanceNorm1d": wrap_module(nn.InstanceNorm1d, CastToFloat),
-        "MaskedInstanceNorm1d": wrap_module(MaskedInstanceNorm1d, CastToFloatAll),
         "MatchedScaleMaskSoftmax": wrap_module(None, replace_MatchedScaleMaskSoftmax),
     }
 
@@ -432,3 +465,43 @@ def replace_for_export(model: nn.Module) -> nn.Module:
     replace_modules(model, default_replacements)
     # This one has to be the last
     replace_modules(model, script_replacements)
+
+
+def add_casts_around_norms(model: nn.Module):
+    """
+    Function to put additional to/from float32 casts around operations known to require full precision.
+    It was used with an extra post-parse script to have TRT preserve extra precision when --fp16 needed.
+    Should not be needed with TRT 8.6.1 or later.
+    """
+    from nemo.collections.tts.modules.submodules import MaskedInstanceNorm1d
+
+    default_cast_replacements = {
+        "BatchNorm1d": wrap_module(nn.BatchNorm1d, CastToFloat),
+        "BatchNorm2d": wrap_module(nn.BatchNorm2d, CastToFloat),
+        "LayerNorm": wrap_module(nn.LayerNorm, CastToFloat),
+        "InstanceNorm1d": wrap_module(nn.InstanceNorm1d, CastToFloat),
+        "MaskedInstanceNorm1d": wrap_module(MaskedInstanceNorm1d, CastToFloatAll),
+    }
+    replace_modules(model, default_cast_replacements)
+
+
+def rename_onnx_io(output, input_names, output_names):
+    onnx_model = onnx.load(output)
+    rename_map = {}
+    for inp, name in zip(onnx_model.graph.input, input_names):
+        rename_map[inp.name] = name
+    for out, name in zip(onnx_model.graph.output, output_names):
+        rename_map[out.name] = name
+    for n in onnx_model.graph.node:
+        for inp in range(len(n.input)):
+            if n.input[inp] in rename_map:
+                n.input[inp] = rename_map[n.input[inp]]
+        for out in range(len(n.output)):
+            if n.output[out] in rename_map:
+                n.output[out] = rename_map[n.output[out]]
+
+    for i in range(len(input_names)):
+        onnx_model.graph.input[i].name = input_names[i]
+    for i in range(len(output_names)):
+        onnx_model.graph.output[i].name = output_names[i]
+    onnx.save(onnx_model, output)

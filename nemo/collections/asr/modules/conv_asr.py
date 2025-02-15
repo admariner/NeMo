@@ -38,7 +38,7 @@ from nemo.collections.asr.parts.submodules.tdnn_attention import (
 from nemo.collections.asr.parts.utils import adapter_utils
 from nemo.core.classes.common import typecheck
 from nemo.core.classes.exportable import Exportable
-from nemo.core.classes.mixins import adapter_mixins
+from nemo.core.classes.mixins import AccessMixin, adapter_mixins
 from nemo.core.classes.module import NeuralModule
 from nemo.core.neural_types import (
     AcousticEncodedRepresentation,
@@ -53,7 +53,7 @@ from nemo.utils import logging
 __all__ = ['ConvASRDecoder', 'ConvASREncoder', 'ConvASRDecoderClassification']
 
 
-class ConvASREncoder(NeuralModule, Exportable):
+class ConvASREncoder(NeuralModule, Exportable, AccessMixin):
     """
     Convolutional encoder for ASR models. With this class you can implement JasperNet and QuartzNet models.
 
@@ -85,8 +85,7 @@ class ConvASREncoder(NeuralModule, Exportable):
 
     @property
     def input_types(self):
-        """Returns definitions of module input ports.
-        """
+        """Returns definitions of module input ports."""
         return OrderedDict(
             {
                 "audio_signal": NeuralType(('B', 'D', 'T'), SpectrogramType()),
@@ -96,8 +95,7 @@ class ConvASREncoder(NeuralModule, Exportable):
 
     @property
     def output_types(self):
-        """Returns definitions of module output ports.
-        """
+        """Returns definitions of module output ports."""
         return OrderedDict(
             {
                 "outputs": NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
@@ -135,7 +133,8 @@ class ConvASREncoder(NeuralModule, Exportable):
         residual_panes = []
         encoder_layers = []
         self.dense_residual = False
-        for lcfg in jasper:
+        self._subsampling_factor = 1
+        for layer_idx, lcfg in enumerate(jasper):
             dense_res = []
             if lcfg.get('residual_dense', False):
                 residual_panes.append(feat_in)
@@ -179,9 +178,13 @@ class ConvASREncoder(NeuralModule, Exportable):
                     stride_last=stride_last,
                     future_context=future_context,
                     quantize=quantize,
+                    layer_idx=layer_idx,
                 )
             )
             feat_in = lcfg['filters']
+            self._subsampling_factor *= (
+                int(lcfg['stride'][0]) if isinstance(lcfg['stride'], List) else int(lcfg['stride'])
+            )
 
         self._feat_out = feat_in
 
@@ -200,7 +203,9 @@ class ConvASREncoder(NeuralModule, Exportable):
         return s_input[-1], length
 
     def update_max_sequence_length(self, seq_length: int, device):
-        # Find global max audio length across all nodes
+        """
+        Find global max audio length across all nodes in distributed training and update the max_audio_length
+        """
         if torch.distributed.is_initialized():
             global_max_len = torch.tensor([seq_length], dtype=torch.float32, device=device)
 
@@ -229,6 +234,10 @@ class ConvASREncoder(NeuralModule, Exportable):
                     m.update_masked_length(self.max_audio_length, seq_range=self.seq_range)
                 elif isinstance(m, SqueezeExcite):
                     m.set_max_len(self.max_audio_length, seq_range=self.seq_range)
+
+    @property
+    def subsampling_factor(self) -> int:
+        return self._subsampling_factor
 
 
 class ParallelConvASREncoder(NeuralModule, Exportable):
@@ -272,8 +281,7 @@ class ParallelConvASREncoder(NeuralModule, Exportable):
 
     @property
     def input_types(self):
-        """Returns definitions of module input ports.
-        """
+        """Returns definitions of module input ports."""
         return OrderedDict(
             {
                 "audio_signal": NeuralType(('B', 'D', 'T'), SpectrogramType()),
@@ -283,8 +291,7 @@ class ParallelConvASREncoder(NeuralModule, Exportable):
 
     @property
     def output_types(self):
-        """Returns definitions of module output ports.
-        """
+        """Returns definitions of module output ports."""
         return OrderedDict(
             {
                 "outputs": NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
@@ -400,10 +407,10 @@ class ParallelConvASREncoder(NeuralModule, Exportable):
 class ConvASRDecoder(NeuralModule, Exportable, adapter_mixins.AdapterModuleMixin):
     """Simple ASR Decoder for use with CTC-based models such as JasperNet and QuartzNet
 
-     Based on these papers:
-        https://arxiv.org/pdf/1904.03288.pdf
-        https://arxiv.org/pdf/1910.10261.pdf
-        https://arxiv.org/pdf/2005.04290.pdf
+    Based on these papers:
+       https://arxiv.org/pdf/1904.03288.pdf
+       https://arxiv.org/pdf/1910.10261.pdf
+       https://arxiv.org/pdf/2005.04290.pdf
     """
 
     @property
@@ -414,13 +421,11 @@ class ConvASRDecoder(NeuralModule, Exportable, adapter_mixins.AdapterModuleMixin
     def output_types(self):
         return OrderedDict({"logprobs": NeuralType(('B', 'T', 'D'), LogprobsType())})
 
-    def __init__(self, feat_in, num_classes, init_mode="xavier_uniform", vocabulary=None):
+    def __init__(self, feat_in, num_classes, init_mode="xavier_uniform", vocabulary=None, add_blank=True):
         super().__init__()
 
         if vocabulary is None and num_classes < 0:
-            raise ValueError(
-                f"Neither of the vocabulary and num_classes are set! At least one of them need to be set."
-            )
+            raise ValueError("Neither of the vocabulary and num_classes are set! At least one of them need to be set.")
 
         if num_classes <= 0:
             num_classes = len(vocabulary)
@@ -429,12 +434,13 @@ class ConvASRDecoder(NeuralModule, Exportable, adapter_mixins.AdapterModuleMixin
         if vocabulary is not None:
             if num_classes != len(vocabulary):
                 raise ValueError(
-                    f"If vocabulary is specified, it's length should be equal to the num_classes. Instead got: num_classes={num_classes} and len(vocabulary)={len(vocabulary)}"
+                    f"If vocabulary is specified, it's length should be equal to the num_classes. \
+                        Instead got: num_classes={num_classes} and len(vocabulary)={len(vocabulary)}"
                 )
             self.__vocabulary = vocabulary
         self._feat_in = feat_in
         # Add 1 for blank char
-        self._num_classes = num_classes + 1
+        self._num_classes = num_classes + 1 if add_blank else num_classes
 
         self.decoder_layers = torch.nn.Sequential(
             torch.nn.Conv1d(self._feat_in, self._num_classes, kernel_size=1, bias=True)
@@ -444,6 +450,9 @@ class ConvASRDecoder(NeuralModule, Exportable, adapter_mixins.AdapterModuleMixin
         accepted_adapters = [adapter_utils.LINEAR_ADAPTER_CLASSPATH]
         self.set_accepted_adapter_types(accepted_adapters)
 
+        # to change, requires running ``model.temperature = T`` explicitly
+        self.temperature = 1.0
+
     @typecheck()
     def forward(self, encoder_output):
         # Adapter module forward step
@@ -452,6 +461,10 @@ class ConvASRDecoder(NeuralModule, Exportable, adapter_mixins.AdapterModuleMixin
             encoder_output = self.forward_enabled_adapters(encoder_output)
             encoder_output = encoder_output.transpose(1, 2)  # [B, C, T]
 
+        if self.temperature != 1.0:
+            return torch.nn.functional.log_softmax(
+                self.decoder_layers(encoder_output).transpose(1, 2) / self.temperature, dim=-1
+            )
         return torch.nn.functional.log_softmax(self.decoder_layers(encoder_output).transpose(1, 2), dim=-1)
 
     def input_example(self, max_batch=1, max_dim=256):
@@ -494,8 +507,7 @@ class ConvASRDecoder(NeuralModule, Exportable, adapter_mixins.AdapterModuleMixin
 
 
 class ConvASRDecoderReconstruction(NeuralModule, Exportable):
-    """ASR Decoder for reconstructing masked regions of spectrogram
-    """
+    """ASR Decoder for reconstructing masked regions of spectrogram"""
 
     @property
     def input_types(self):
@@ -615,8 +627,8 @@ class ConvASRDecoderReconstruction(NeuralModule, Exportable):
 class ConvASRDecoderClassification(NeuralModule, Exportable):
     """Simple ASR Decoder for use with classification models such as JasperNet and QuartzNet
 
-     Based on these papers:
-        https://arxiv.org/pdf/2005.04290.pdf
+    Based on these papers:
+       https://arxiv.org/pdf/2005.04290.pdf
     """
 
     def input_example(self, max_batch=1, max_dim=256):
@@ -660,8 +672,7 @@ class ConvASRDecoderClassification(NeuralModule, Exportable):
         self.decoder_layers = torch.nn.Sequential(torch.nn.Linear(self._feat_in, self._num_classes, bias=True))
         self.apply(lambda x: init_weights(x, mode=init_mode))
 
-    @typecheck()
-    def forward(self, encoder_output):
+    def forward(self, encoder_output, **kwargs):
         batch, in_channels, timesteps = encoder_output.size()
 
         encoder_output = self.pooling(encoder_output).view(batch, in_channels)  # [B, C]
@@ -697,8 +708,7 @@ class ECAPAEncoder(NeuralModule, Exportable):
 
     @property
     def input_types(self):
-        """Returns definitions of module input ports.
-        """
+        """Returns definitions of module input ports."""
         return OrderedDict(
             {
                 "audio_signal": NeuralType(('B', 'D', 'T'), SpectrogramType()),
@@ -708,8 +718,7 @@ class ECAPAEncoder(NeuralModule, Exportable):
 
     @property
     def output_types(self):
-        """Returns definitions of module output ports.
-        """
+        """Returns definitions of module output ports."""
         return OrderedDict(
             {
                 "outputs": NeuralType(('B', 'D', 'T'), AcousticEncodedRepresentation()),
@@ -761,16 +770,16 @@ class SpeakerDecoder(NeuralModule, Exportable):
     """
     Speaker Decoder creates the final neural layers that maps from the outputs
     of Jasper Encoder to the embedding layer followed by speaker based softmax loss.
+
     Args:
         feat_in (int): Number of channels being input to this module
         num_classes (int): Number of unique speakers in dataset
-        emb_sizes (list) : shapes of intermediate embedding layers (we consider speaker embbeddings from 1st of this layers)
-                Defaults to [1024,1024]
+        emb_sizes (list) : shapes of intermediate embedding layers (we consider speaker embbeddings
+            from 1st of this layers). Defaults to [1024,1024]
         pool_mode (str) : Pooling strategy type. options are 'xvector','tap', 'attention'
-                Defaults to 'xvector (mean and variance)'
-                tap (temporal average pooling: just mean)
-                attention (attention based pooling)
-
+            Defaults to 'xvector (mean and variance)'
+            tap (temporal average pooling: just mean)
+            attention (attention based pooling)
         init_mode (str): Describes how neural network parameters are
             initialized. Options are ['xavier_uniform', 'xavier_normal',
             'kaiming_uniform','kaiming_normal'].
@@ -845,7 +854,11 @@ class SpeakerDecoder(NeuralModule, Exportable):
         self.apply(lambda x: init_weights(x, mode=init_mode))
 
     def affine_layer(
-        self, inp_shape, out_shape, learn_mean=True, affine_type='conv',
+        self,
+        inp_shape,
+        out_shape,
+        learn_mean=True,
+        affine_type='conv',
     ):
         if affine_type == 'conv':
             layer = nn.Sequential(
@@ -911,12 +924,16 @@ class ConvASREncoderAdapter(ConvASREncoder, adapter_mixins.AdapterModuleMixin):
         cfg = adapter_utils.update_adapter_cfg_input_dim(self, cfg, module_dim=block.planes)
         return cfg
 
-    def get_accepted_adapter_types(self,) -> Set[type]:
+    def get_accepted_adapter_types(
+        self,
+    ) -> Set[type]:
         types = super().get_accepted_adapter_types()
 
         if len(types) == 0:
             self.set_accepted_adapter_types(
-                [adapter_utils.LINEAR_ADAPTER_CLASSPATH,]
+                [
+                    adapter_utils.LINEAR_ADAPTER_CLASSPATH,
+                ]
             )
             types = self.get_accepted_adapter_types()
         return types

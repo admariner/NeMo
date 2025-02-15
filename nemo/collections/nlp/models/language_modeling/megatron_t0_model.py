@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import torch
+from lightning.pytorch.trainer.trainer import Trainer
 from omegaconf import DictConfig, ListConfig
-from pytorch_lightning.trainer.trainer import Trainer
 
 from nemo.collections.nlp.data.language_modeling.megatron.base_dataset_utils import (
     get_datasets_weights_and_num_samples,
@@ -23,22 +23,32 @@ from nemo.collections.nlp.data.language_modeling.megatron.megatron_batch_sampler
     MegatronPretrainingBatchSampler,
 )
 from nemo.collections.nlp.data.language_modeling.t0_dataset import T0Dataset
-from nemo.collections.nlp.models.language_modeling.megatron_finetune_model import MegatronT5FinetuneModel
+from nemo.collections.nlp.models.language_modeling.megatron_t5_sft_model import MegatronT5SFTModel
 from nemo.utils import AppState, logging
 
 try:
-    from apex.transformer import parallel_state
-    from apex.transformer.pipeline_parallel.utils import _reconfigure_microbatch_calculator
+    from megatron.core import parallel_state
 
-    HAVE_APEX = True
+    HAVE_MEGATRON_CORE = True
+
 except (ImportError, ModuleNotFoundError):
-    HAVE_APEX = False
+
+    HAVE_MEGATRON_CORE = False
+
+try:
+    from megatron.core.num_microbatches_calculator import reconfigure_num_microbatches_calculator
+
+except (ImportError, ModuleNotFoundError):
+    logging.warning("Megatron num_microbatches_calculator not found, using Apex version.")
+    from apex.transformer.pipeline_parallel.utils import (
+        _reconfigure_microbatch_calculator as reconfigure_num_microbatches_calculator,
+    )
 
 __all__ = ['MegatronT0Model']
 
 
-class MegatronT0Model(MegatronT5FinetuneModel):
-    """T0 (https://arxiv.org/abs/2110.08207) Model that Inherits from MegatronT5FinetuneModel and overrides the dataset building."""
+class MegatronT0Model(MegatronT5SFTModel):
+    """T0 (https://arxiv.org/abs/2110.08207) Model that Inherits from MegatronT5SFTModel and overrides the dataset building."""
 
     def __init__(self, cfg: DictConfig, trainer: Trainer):
         super().__init__(cfg, trainer=trainer)
@@ -46,7 +56,7 @@ class MegatronT0Model(MegatronT5FinetuneModel):
     def setup(self, stage=None):
         # NOTE: super().__init__ will try and setup train/val/test datasets, but we sidestep this using a if self._train_ds is not None condition
         # We then set things up for real only once setup() of this class is called.
-        resume_checkpoint_path = self.trainer._checkpoint_connector.resume_from_checkpoint_fit_path
+        resume_checkpoint_path = self.trainer.ckpt_path
         if resume_checkpoint_path:
             init_consumed_samples = self._extract_consumed_samples_from_ckpt(resume_checkpoint_path)
         else:
@@ -142,8 +152,8 @@ class MegatronT0Model(MegatronT5FinetuneModel):
         else:
             return datasets
 
-    def training_step(self, batch, batch_idx):
-        return super(MegatronT5FinetuneModel, self).training_step(batch, batch_idx)
+    def training_step(self, dataloader_iter, batch_idx):
+        return super().training_step(dataloader_iter, batch_idx)
 
     # Override the parent batch reconfiguring logic.
     def _reconfigure_and_process_inference_batch(self, batch):
@@ -151,7 +161,7 @@ class MegatronT0Model(MegatronT5FinetuneModel):
         # This should happen only on the last batch of the validation/test dataset with drop_last=False.
         if global_batch_per_gpu != self.cfg.data.validation_ds.global_batch_size:
             app_state = AppState()
-            _reconfigure_microbatch_calculator(
+            reconfigure_num_microbatches_calculator(
                 rank=app_state.global_rank,
                 rampup_batch_size=None,
                 global_batch_size=global_batch_per_gpu * parallel_state.get_data_parallel_world_size(),
@@ -183,7 +193,10 @@ class MegatronT0Model(MegatronT5FinetuneModel):
         logging.info(f'Length of train dataset: {len(self._train_ds)}')
 
     def build_data_loader(
-        self, dataset, data_cfg, consumed_samples=0,
+        self,
+        dataset,
+        data_cfg,
+        consumed_samples=0,
     ):
         """Buld dataloader given an input dataset."""
         logging.info(f'Building dataloader with consumed samples: {consumed_samples}')
@@ -213,22 +226,28 @@ class MegatronT0Model(MegatronT5FinetuneModel):
         if hasattr(self, '_train_ds'):
             consumed_samples = self.compute_consumed_samples(0)
             self._train_dl = self.build_data_loader(
-                dataset=self._train_ds, data_cfg=self.cfg.data.train_ds, consumed_samples=consumed_samples,
+                dataset=self._train_ds,
+                data_cfg=self.cfg.data.train_ds,
+                consumed_samples=consumed_samples,
             )
 
     def setup_eval_dataloader(self, datasets, data_cfg):
         dataloaders = []
         for dataset in datasets:
-            eval_dl = self.build_data_loader(dataset=dataset, data_cfg=data_cfg, consumed_samples=0,)
+            eval_dl = self.build_data_loader(
+                dataset=dataset,
+                data_cfg=data_cfg,
+                consumed_samples=0,
+            )
             dataloaders.append(eval_dl)
         return dataloaders
 
     # TODO: Temporary overrides of finetune model. This needs to removed in the finetune model.
     def on_train_start(self) -> None:
-        super(MegatronT5FinetuneModel, self).on_train_start()
+        super().on_train_start()
 
     def on_validation_start(self) -> None:
-        super(MegatronT5FinetuneModel, self).on_validation_start()
+        super().on_validation_start()
 
     def on_test_start(self) -> None:
-        super(MegatronT5FinetuneModel, self).on_test_start()
+        super().on_test_start()

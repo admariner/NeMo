@@ -19,18 +19,15 @@ from typing import Optional, Tuple
 import numpy as np
 import torch
 from torch import Tensor, nn
-from torch.cuda import amp
-from torch.cuda.amp import autocast as autocast
 from torch.nn import functional as F
-from torch.nn.utils.rnn import PackedSequence
 
-from nemo.collections.tts.helpers.helpers import get_mask_from_lengths, sort_tensor
-from nemo.collections.tts.helpers.splines import (
+from nemo.collections.tts.modules.submodules import ConvNorm, LinearNorm, MaskedInstanceNorm1d
+from nemo.collections.tts.parts.utils.helpers import get_mask_from_lengths, sort_tensor, unsort_tensor
+from nemo.collections.tts.parts.utils.splines import (
     piecewise_linear_inverse_transform,
     piecewise_linear_transform,
     unbounded_piecewise_quadratic_transform,
 )
-from nemo.collections.tts.modules.submodules import ConvNorm, LinearNorm, MaskedInstanceNorm1d
 
 
 @torch.jit.script
@@ -82,35 +79,37 @@ class BiLSTM(nn.Module):
 
         self.bilstm.flatten_parameters()
 
-    def lstm_tensor(self, context: Tensor, lens: Tensor, enforce_sorted: bool = False) -> Tuple[Tensor, Tensor]:
-        seq = nn.utils.rnn.pack_padded_sequence(
-            context, lens.long().cpu(), batch_first=True, enforce_sorted=enforce_sorted
-        )
-        return self.lstm_sequence(seq)
+    def lstm_sorted(self, context: Tensor, lens: Tensor, hx: Optional[Tuple[Tensor, Tensor]] = None) -> Tensor:
+        seq = nn.utils.rnn.pack_padded_sequence(context, lens.long().cpu(), batch_first=True, enforce_sorted=True)
+        ret, _ = self.bilstm(seq, hx)
+        return nn.utils.rnn.pad_packed_sequence(ret, batch_first=True)[0]
 
-    def lstm_sequence(self, seq: PackedSequence) -> Tuple[Tensor, Tensor]:
-        if not (torch.jit.is_scripting() or torch.jit.is_tracing()):
-            self.bilstm.flatten_parameters()
-            ret, _ = self.bilstm(seq)
-        else:
+    def lstm(self, context: Tensor, lens: Tensor, hx: Optional[Tuple[Tensor, Tensor]] = None) -> Tensor:
+        # To be ONNX-exportable, we need to sort here rather that while packing
+        context, lens, unsort_ids = sort_tensor(context, lens)
+        ret = self.lstm_sorted(context, lens, hx=hx)
+        return unsort_tensor(ret, unsort_ids)
+
+    def lstm_nocast(self, context: Tensor, lens: Tensor) -> Tensor:
+        dtype = context.dtype
+        # autocast guard is only needed for Torchscript to run in Triton
+        # (https://github.com/pytorch/pytorch/issues/89241)
+        with torch.amp.autocast(self.device.type, enabled=False):
             # Calculate sizes and prepare views to our zero buffer to pass as hx
-            max_batch_size = seq.batch_sizes[0]
+            max_batch_size = context.shape[0]
+            context = context.to(dtype=torch.float32)
             common_shape = (self.bilstm.num_layers * 2, max_batch_size)
             hx = (
-                seq.data.new_zeros(*common_shape, self.real_hidden_size),
-                seq.data.new_zeros(*common_shape, self.bilstm.hidden_size),
+                context.new_zeros(*common_shape, self.real_hidden_size),
+                context.new_zeros(*common_shape, self.bilstm.hidden_size),
             )
-            ret, _ = self.bilstm(seq, hx)
-        return nn.utils.rnn.pad_packed_sequence(ret, batch_first=True)
+            return self.lstm(context, lens, hx=hx).to(dtype=dtype)
 
     def forward(self, context: Tensor, lens: Tensor) -> Tensor:
-        context, lens, unsort_ids = sort_tensor(context, lens)
-        dtype = context.dtype
-        # this is only needed for Torchscript to run in Triton
-        # (https://github.com/pytorch/pytorch/issues/89241)
-        with torch.cuda.amp.autocast(enabled=False):
-            ret = self.lstm_tensor(context.to(dtype=torch.float32), lens, enforce_sorted=True)
-        return ret[0].to(dtype=dtype)[unsort_ids]
+        self.bilstm.flatten_parameters()
+        if torch.jit.is_tracing():
+            return self.lstm_nocast(context, lens)
+        return self.lstm(context, lens)
 
 
 class ConvLSTMLinear(nn.Module):
@@ -162,16 +161,18 @@ class ConvLSTMLinear(nn.Module):
         mask = mask.to(dtype=context.dtype).unsqueeze(1)
         for conv in self.convolutions:
             context = self.dropout(F.relu(conv(context, mask)))
-        context = context.transpose(1, 2)
         # Apply Bidirectional LSTM
-        context = self.bilstm(context, lens)
+        context = self.bilstm(context.transpose(1, 2), lens=lens)
         if self.dense is not None:
             context = self.dense(context).permute(0, 2, 1)
         return context
 
 
 def get_radtts_encoder(
-    encoder_n_convolutions=3, encoder_embedding_dim=512, encoder_kernel_size=5, norm_fn=MaskedInstanceNorm1d,
+    encoder_n_convolutions=3,
+    encoder_embedding_dim=512,
+    encoder_kernel_size=5,
+    norm_fn=MaskedInstanceNorm1d,
 ):
     return ConvLSTMLinear(
         in_dim=encoder_embedding_dim,
@@ -203,7 +204,7 @@ class Invertible1x1ConvLUS(torch.nn.Module):
         self.upper_diag = nn.Parameter(torch.diag(upper))
         self.upper = nn.Parameter(torch.triu(upper, 1))
 
-    @amp.autocast(False)
+    @torch.amp.autocast(device_type='cuda', enabled=False)
     def forward(self, z, inverse=False):
         U = torch.triu(self.upper, 1) + torch.diag(self.upper_diag)
         L = torch.tril(self.lower, -1) + torch.diag(self.lower_diag)
@@ -211,12 +212,9 @@ class Invertible1x1ConvLUS(torch.nn.Module):
         if inverse:
             if not hasattr(self, 'W_inverse'):
                 # inverse computation
-                W_inverse = W.float().inverse()
-                if z.type() == 'torch.cuda.HalfTensor':
-                    W_inverse = W_inverse.half()
-
+                W_inverse = W.float().inverse().to(dtype=z.dtype)
                 self.W_inverse = W_inverse[..., None]
-            z = F.conv1d(z, self.W_inverse, bias=None, stride=1, padding=0)
+            z = F.conv1d(z, self.W_inverse.to(dtype=z.dtype), bias=None, stride=1, padding=0)
             return z
         else:
             W = W[..., None]
@@ -252,10 +250,7 @@ class Invertible1x1Conv(torch.nn.Module):
         if inverse:
             if not hasattr(self, 'W_inverse'):
                 # Inverse computation
-                W_inverse = W.float().inverse()
-                if z.type() == 'torch.cuda.HalfTensor':
-                    W_inverse = W_inverse.half()
-
+                W_inverse = W.float().inverse().to(dtype=z.dtype)
                 self.W_inverse = W_inverse[..., None]
             z = F.conv1d(z, self.W_inverse, bias=None, stride=1, padding=0)
             return z
@@ -286,7 +281,7 @@ class SimpleConvNet(torch.nn.Module):
         out_channels = -1
         self.use_partial_padding = use_partial_padding
         for i in range(n_layers):
-            dilation = 2 ** i if with_dilation else 1
+            dilation = 2**i if with_dilation else 1
             padding = int((kernel_size * dilation - dilation) / 2)
             out_channels = min(max_channels, in_channels * 2)
             self.layers.append(
@@ -360,7 +355,7 @@ class WN(torch.nn.Module):
         self.end = end
 
         for i in range(n_layers):
-            dilation = 2 ** i
+            dilation = 2**i
             padding = int((kernel_size * dilation - dilation) / 2)
             in_layer = ConvNorm(
                 n_channels,
@@ -475,7 +470,7 @@ class SplineTransformationLayerAR(torch.nn.Module):
         z_reshaped = z.permute(0, 2, 1).reshape(b_s * t_s, -1)
         affine_params = self.param_predictor(context)
         q_tilde = affine_params.permute(0, 2, 1).reshape(b_s * t_s, c_s, -1)
-        with amp.autocast(enabled=False):
+        with torch.amp.autocast(self.device.type, enabled=False):
             if self.use_quadratic:
                 w = q_tilde[:, :, : self.n_bins // 2]
                 v = q_tilde[:, :, self.n_bins // 2 :]
@@ -560,7 +555,7 @@ class SplineTransformationLayer(torch.nn.Module):
         z_1_reshaped = z_1.permute(0, 2, 1).reshape(b_s * t_s, -1)
         q_tilde = affine_params.permute(0, 2, 1).reshape(b_s * t_s, n_half, self.n_bins)
 
-        with autocast(enabled=False):
+        with torch.amp.autocast(self.device.type, enabled=False):
             if self.use_quadratic:
                 w = q_tilde[:, :, : self.n_bins // 2]
                 v = q_tilde[:, :, self.n_bins // 2 :]
@@ -634,6 +629,12 @@ class AffineTransformationLayer(torch.nn.Module):
                 kernel_size=kernel_size,
                 use_partial_padding=use_partial_padding,
             )
+        else:
+            raise ValueError(
+                f"Affine model is not supported: {affine_model}. Please choose either 'wavenet' or"
+                f"'simple_conv' instead."
+            )
+
         self.n_mel_channels = n_mel_channels
 
     def get_scaling_and_logs(self, scale_unconstrained):
@@ -670,6 +671,11 @@ class AffineTransformationLayer(torch.nn.Module):
                 log_s_list.append(log_s_i[:, None])
             s = torch.cat(s_list, dim=1)
             log_s = torch.cat(log_s_list, dim=1)
+        else:
+            raise ValueError(
+                f"Scaling function is not supported: {self.scaling_fn}. Please choose either 'translate', "
+                f"'exp', 'tanh', or 'sigmoid' instead."
+            )
         return s, log_s
 
     def forward(self, z, context, inverse=False, seq_lens=None):
@@ -680,6 +686,11 @@ class AffineTransformationLayer(torch.nn.Module):
         elif self.affine_model == 'simple_conv':
             z_w_context = torch.cat((z_0, context), 1)
             affine_params = self.affine_param_predictor(z_w_context, seq_lens=seq_lens)
+        else:
+            raise ValueError(
+                f"Affine model is not supported: {self.affine_model}. Please choose either 'wavenet' or "
+                f"'simple_conv' instead."
+            )
 
         scale_unconstrained = affine_params[:, :n_half, :]
         b = affine_params[:, n_half:, :]
@@ -716,31 +727,6 @@ class ConvAttention(torch.nn.Module):
             torch.nn.ReLU(),
             ConvNorm(n_mel_channels, n_att_channels, kernel_size=1, bias=True),
         )
-
-    def run_padded_sequence(self, sorted_idx, unsort_idx, lens, padded_data, recurrent_model):
-        """Sorts input data by previded ordering (and un-ordering) and runs the
-        packed data through the recurrent model
-
-        Args:
-            sorted_idx (torch.tensor): 1D sorting index
-            unsort_idx (torch.tensor): 1D unsorting index (inverse of sorted_idx)
-            lens: lengths of input data (sorted in descending order)
-            padded_data (torch.tensor): input sequences (padded)
-            recurrent_model (nn.Module): recurrent model to run data through
-        Returns:
-            hidden_vectors (torch.tensor): outputs of the RNN, in the original,
-            unsorted, ordering
-        """
-
-        # sort the data by decreasing length using provided index
-        # we assume batch index is in dim=1
-        padded_data = padded_data[:, sorted_idx]
-        padded_data = nn.utils.rnn.pack_padded_sequence(padded_data, lens)
-        hidden_vectors = recurrent_model(padded_data)[0]
-        hidden_vectors, _ = nn.utils.rnn.pad_packed_sequence(hidden_vectors)
-        # unsort the results at dim=1 and return
-        hidden_vectors = hidden_vectors[:, unsort_idx]
-        return hidden_vectors
 
     def forward(self, queries, keys, query_lens, mask=None, key_lens=None, attn_prior=None):
         """Attention mechanism for radtts. Unlike in Flowtron, we have no
@@ -779,3 +765,30 @@ class ConvAttention(torch.nn.Module):
 
         attn = self.softmax(attn)  # softmax along T2
         return attn, attn_logprob
+
+
+class GaussianDropout(torch.nn.Module):
+    """
+    Gaussian dropout using multiplicative gaussian noise.
+
+    https://keras.io/api/layers/regularization_layers/gaussian_dropout/
+
+    Can be an effective alternative bottleneck to VAE or VQ:
+
+    https://www.deepmind.com/publications/gaussian-dropout-as-an-information-bottleneck-layer
+
+    Unlike some other implementations, this takes the standard deviation of the noise as input
+    instead of the 'rate' typically defined as: stdev = sqrt(rate / (1 - rate))
+    """
+
+    def __init__(self, stdev=1.0):
+        super(GaussianDropout, self).__init__()
+        self.stdev = stdev
+
+    def forward(self, inputs):
+        if not self.training:
+            return inputs
+
+        noise = torch.normal(mean=1.0, std=self.stdev, size=inputs.shape, device=inputs.device)
+        out = noise * inputs
+        return out

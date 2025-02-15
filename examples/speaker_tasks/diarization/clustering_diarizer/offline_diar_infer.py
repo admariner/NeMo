@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from lightning.pytorch import seed_everything
 from omegaconf import OmegaConf
-from pytorch_lightning import seed_everything
 
 from nemo.collections.asr.models import ClusteringDiarizer
 from nemo.core.config import hydra_runner
@@ -39,7 +39,7 @@ seed_everything(42)
 @hydra_runner(config_path="../conf/inference", config_name="diar_infer_meeting.yaml")
 def main(cfg):
     logging.info(f'Hydra config: {OmegaConf.to_yaml(cfg)}')
-    sd_model = ClusteringDiarizer(cfg=cfg)
+    sd_model = ClusteringDiarizer(cfg=cfg).to(cfg.device)
     sd_model.diarize()
 
 
